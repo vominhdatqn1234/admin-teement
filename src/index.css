@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
+    "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: #fff;
+  color: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Tailwind preflight tắt (tránh vỡ antd) nên phải tự set border-style,
+   nếu không các class border-* sẽ không hiển thị viền */
+*,
+*::before,
+*::after {
+  border-width: 0;
+  border-style: solid;
+  border-color: #e5e7eb;
+}

@@ -15,10 +15,45 @@ import { FiDownload, FiEdit3, FiPlus, FiTrash2, FiUpload } from "react-icons/fi"
 import { usePodPrices, usePodPriceMutations } from "../../hooks/useAdmin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { PodPrice } from "../../models/admin";
+import VariantPrices from "./VariantPrices";
 
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 300, 1000];
 
 export default function PodPrices() {
+  const [tab, setTab] = useState<"variants" | "legacy">("variants");
+  return (
+    <div>
+      <h1 className="text-xl font-semibold text-gray-900 m-0 mb-1">
+        Bảng giá POD
+      </h1>
+      <div className="flex gap-2 mt-3 mb-4">
+        <button
+          onClick={() => setTab("variants")}
+          className={`px-4 py-2 rounded-lg text-[13px] font-medium cursor-pointer border ${
+            tab === "variants"
+              ? "bg-[#171826] text-white border-[#171826]"
+              : "bg-white text-gray-600 border-gray-200"
+          }`}
+        >
+          Giá Sản Phẩm (Màu / Size)
+        </button>
+        <button
+          onClick={() => setTab("legacy")}
+          className={`px-4 py-2 rounded-lg text-[13px] font-medium cursor-pointer border ${
+            tab === "legacy"
+              ? "bg-[#171826] text-white border-[#171826]"
+              : "bg-white text-gray-600 border-gray-200"
+          }`}
+        >
+          Bảng giá theo Loại + Size
+        </button>
+      </div>
+      {tab === "variants" ? <VariantPrices /> : <LegacyPodPrices />}
+    </div>
+  );
+}
+
+function LegacyPodPrices() {
   const { prices } = usePodPrices();
   const { add, update, remove, removeMany } = usePodPriceMutations();
 

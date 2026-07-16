@@ -5,9 +5,11 @@ import {
   FiUsers,
   FiFileText,
   FiBox,
+  FiDroplet,
   FiTag,
   FiTruck,
   FiPenTool,
+  FiPrinter,
   FiSettings,
   FiSearch,
   FiSidebar,
@@ -20,9 +22,11 @@ const EXTENSIONS = [
   { to: "/app/sellers", label: "Quản lý Seller", icon: <FiUsers /> },
   { to: "/app/services", label: "Dịch vụ mở rộng", icon: <FiFileText /> },
   { to: "/app/blanks", label: "Kho Phôi POD", icon: <FiBox /> },
+  { to: "/app/colors", label: "Mã màu phôi", icon: <FiDroplet /> },
   { to: "/app/pod-prices", label: "Bảng giá POD", icon: <FiTag /> },
   { to: "/app/shipping-prices", label: "Bảng giá Vận chuyển", icon: <FiTruck /> },
   { to: "/app/design-orders", label: "Đơn Thiết Kế", icon: <FiPenTool /> },
+  { to: "/app/print-house", label: "Nhà In", icon: <FiPrinter /> },
 ];
 
 export default function AdminLayout() {

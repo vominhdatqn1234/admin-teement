@@ -15,23 +15,31 @@ import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FiDownload,
+  FiCheck,
+  FiCheckCircle,
   FiEdit3,
   FiEye,
+  FiInfo,
   FiMaximize2,
   FiMinimize2,
   FiRefreshCw,
+  FiRotateCcw,
   FiTrash2,
   FiTruck,
   FiUpload,
+  FiXCircle,
 } from "react-icons/fi";
 import {
+  useBaseProducts,
   useOrderMutations,
   useOrders,
+  usePodColors,
   useSellerMutations,
   useSellers,
   useStoreMutations,
   useStores,
 } from "../../hooks/useAdmin";
+import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
 import { ORDER_STATUS, PodOrder, Seller } from "../../models/admin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { toDirectImageUrl } from "../../lib/imageUrl";
@@ -54,6 +62,18 @@ export default function Sellers() {
   const { sellers } = useSellers();
   const { stores } = useStores();
   const { orders } = useOrders();
+  const { products } = useBaseProducts();
+  const { colors: podColors } = usePodColors();
+  // Tên phôi trong Kho Phôi POD theo SKU (vd TM-000-16 -> T-Shirt Comfort)
+  const blankName = (sku?: string) =>
+    products.find((p) => p.sku === sku)?.name || sku || "Unknown";
+  // Màu item -> hex làm nền thiết kế (ưu tiên bảng Mã màu phôi)
+  const colorCss = (name?: string): string | undefined => {
+    if (!name) return undefined;
+    const k = name.trim().toLowerCase();
+    const db = podColors.find((c) => c.name.trim().toLowerCase() === k);
+    return db?.hex || DEFAULT_COLOR_HEX[k] || undefined;
+  };
   const sellerMut = useSellerMutations();
   const storeMut = useStoreMutations();
   const orderMut = useOrderMutations();
@@ -82,6 +102,22 @@ export default function Sellers() {
   const PAGE_SIZE = 50;
 
   const realSellers = sellers.filter((s) => s.permission !== "Admin");
+
+  // 3 loại phí của seller sở hữu đơn — nhập 1 lần cho seller là tự áp cho
+  // tất cả đơn thuộc mọi shop của seller đó (kể cả đơn đang chờ duyệt).
+  // Tổng đơn = Giá + Markup + Phí xử lý đơn - Ưu đãi.
+  const feesOf = (userId?: string) => {
+    const s = sellers.find((x) => x.id === userId);
+    const markup = s?.markup || 0;
+    const perOrderFee = s?.perOrderFee || 0;
+    const discount = s?.discount || 0;
+    return {
+      markup,
+      perOrderFee,
+      discount,
+      extra: markup + perOrderFee - discount,
+    };
+  };
 
   const filtered = useMemo(() => {
     return orders.filter((o) => {
@@ -167,17 +203,24 @@ export default function Sellers() {
     downloadCSV(
       filename,
       toCSV(
-        ["Order ID", "Status", "Shop", "Customer", "Date", "Paid", "Tracking", "Total"],
-        list.map((o) => [
-          o.orderCode,
-          ORDER_STATUS[o.status]?.label || o.status,
-          o.storeName || "",
-          o.customerName || "",
-          dayjs(o.created).format("DD/MM/YYYY"),
-          o.datePaid ? dayjs(o.datePaid).format("DD/MM/YYYY") : "Chưa thanh toán",
-          o.tracking || "",
-          (o.total || 0).toFixed(2),
-        ])
+        ["Order ID", "Status", "Shop", "Customer", "Date", "Paid", "Tracking", "Price", "Markup", "Order Fee", "Discount", "Total"],
+        list.map((o) => {
+          const f = feesOf(o.userId);
+          return [
+            o.orderCode,
+            ORDER_STATUS[o.status]?.label || o.status,
+            o.storeName || "",
+            o.customerName || "",
+            dayjs(o.created).format("DD/MM/YYYY"),
+            o.datePaid ? dayjs(o.datePaid).format("DD/MM/YYYY") : "Chưa thanh toán",
+            o.tracking || "",
+            (o.total || 0).toFixed(2),
+            f.markup.toFixed(2),
+            f.perOrderFee.toFixed(2),
+            f.discount.toFixed(2),
+            ((o.total || 0) + f.extra).toFixed(2),
+          ];
+        })
       )
     );
   };
@@ -192,6 +235,93 @@ export default function Sellers() {
   };
   const handleExportSelected = () =>
     exportOrders(selectedOrders(), "selected-orders.csv");
+
+  // Trả đơn về trạng thái trước đó trong luồng xử lý.
+  // Đơn "Chờ duyệt" không lùi được nữa (không quay về Chưa thanh toán).
+  const PREV_STATUS: Record<string, string> = {
+    in_production: "pending_approval",
+    shipping: "in_production",
+    completed: "shipping",
+  };
+  const revertableSelected = () =>
+    selectedOrders().filter((o) => PREV_STATUS[o.status]);
+
+  // Duyệt / Hủy hàng loạt cho các đơn Chờ duyệt trong số đã chọn
+  const approvableSelected = () =>
+    selectedOrders().filter((o) => o.status === "pending_approval");
+  const handleBulkApprove = async () => {
+    const list = approvableSelected();
+    for (const o of list) {
+      await orderMut.update.mutateAsync({ id: o.id, status: "in_production" });
+    }
+    message.success(`Đã duyệt ${list.length} đơn → Đang sản xuất`);
+    setSelectedIds([]);
+  };
+  const handleBulkCancel = async () => {
+    const list = approvableSelected();
+    for (const o of list) {
+      await orderMut.update.mutateAsync({ id: o.id, status: "cancelled" });
+    }
+    message.success(`Đã hủy ${list.length} đơn`);
+    setSelectedIds([]);
+  };
+
+  // Xử lý đơn Yêu cầu Hỗ trợ trong số đã chọn
+  const supportSelected = () =>
+    selectedOrders().filter((o) => o.status === "support");
+  // Duyệt đi lại đơn -> chuyển sang Đơn Reship
+  const handleBulkReship = async () => {
+    const list = supportSelected();
+    for (const o of list) {
+      await orderMut.update.mutateAsync({ id: o.id, status: "reship" });
+    }
+    message.success(`Đã duyệt đi lại ${list.length} đơn (Reship)`);
+    setSelectedIds([]);
+  };
+  // Hủy đơn Reship -> trả đơn về trạng thái trước khi seller gửi yêu cầu hỗ trợ
+  const reshipSelected = () =>
+    selectedOrders().filter((o) => o.status === "reship");
+  const handleBulkUnreship = async () => {
+    const list = reshipSelected();
+    for (const o of list) {
+      await orderMut.update.mutateAsync({
+        id: o.id,
+        status: (o as any).prevStatus || "completed",
+        prevStatus: "",
+      } as any);
+    }
+    message.success(`Đã hủy ${list.length} đơn Reship`);
+    setSelectedIds([]);
+  };
+
+  // Hủy yêu cầu hỗ trợ -> trả đơn về trạng thái trước khi seller gửi yêu cầu
+  const handleBulkUnsupport = async () => {
+    const list = supportSelected();
+    for (const o of list) {
+      await orderMut.update.mutateAsync({
+        id: o.id,
+        status: (o as any).prevStatus || "in_production",
+        prevStatus: "",
+      } as any);
+    }
+    message.success(`Đã hủy yêu cầu hỗ trợ của ${list.length} đơn`);
+    setSelectedIds([]);
+  };
+  const handleBulkRevert = async () => {
+    const list = revertableSelected();
+    const skipped = selectedIds.length - list.length;
+    for (const o of list) {
+      await orderMut.update.mutateAsync({
+        id: o.id,
+        status: PREV_STATUS[o.status],
+      });
+    }
+    if (list.length)
+      message.success(`Đã trả ${list.length} đơn về trạng thái trước`);
+    if (skipped)
+      message.info(`Bỏ qua ${skipped} đơn không có trạng thái trước để lùi`);
+    setSelectedIds([]);
+  };
   const handleAssignPrinter = () => {
     // TODO: chưa có model Nhà In để phân bổ
     message.info(
@@ -564,18 +694,25 @@ export default function Sellers() {
                   <th className="p-3 font-medium">Shop & Khách</th>
                   <th className="p-3 font-medium">Ngày Lên Đơn</th>
                   <th className="p-3 font-medium">Ngày Thanh Toán</th>
-                  <th className="p-3 font-medium">Phôi Fulfill</th>
+                  <th className="p-3 font-bold text-amber-700">
+                    Sản phẩm Gốc
+                  </th>
+                  <th className="p-3 font-bold text-[#2563EB]">
+                    Phôi Fulfill
+                  </th>
                   <th className="p-3 font-medium">Thiết kế</th>
                   <th className="p-3 font-medium">Nhà In</th>
                   <th className="p-3 font-medium">Tracking</th>
                   <th className="p-3 font-medium text-right">Giá</th>
+                  <th className="p-3 font-medium text-right">Phí</th>
+                  <th className="p-3 font-medium text-right">Tổng</th>
                   <th className="p-3 font-medium">Thao tác</th>
                 </tr>
               </thead>
               <tbody>
                 {paged.map((o) => {
                   const st = ORDER_STATUS[o.status];
-                  const firstSku = o.items?.[0]?.productSku;
+                  const f = feesOf(o.userId);
                   return (
                     <tr
                       key={o.id}
@@ -616,7 +753,14 @@ export default function Sellers() {
                       </td>
                       <td className="p-3 whitespace-nowrap">
                         {o.datePaid ? (
-                          dayjs(o.datePaid).format("DD/MM/YYYY")
+                          <div className="inline-flex flex-col items-center">
+                            <span className="inline-block bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold rounded-md px-2 py-0.5">
+                              {dayjs(o.datePaid).format("D/M/YYYY")}
+                            </span>
+                            <span className="text-[11px] text-gray-400 mt-1">
+                              {dayjs(o.datePaid).format("HH:mm")}
+                            </span>
+                          </div>
                         ) : o.status === "pending_payment" ? (
                           <span className="text-gray-400 italic">
                             Chưa thanh toán
@@ -626,49 +770,136 @@ export default function Sellers() {
                         )}
                       </td>
                       <td className="p-3">
-                        {firstSku ? (
-                          <span className="bg-[#EFF4FF] text-[#2563EB] text-[11px] font-medium rounded px-2 py-0.5">
-                            {firstSku}
-                            {o.items.length > 1 &&
-                              ` (+${o.items.length - 1} món khác)`}
-                          </span>
-                        ) : (
-                          <span className="bg-[#EFF4FF] text-[#2563EB] text-[11px] font-medium rounded px-2 py-0.5">
-                            Unknown Product
-                          </span>
-                        )}
+                        <div className="space-y-1.5">
+                          {(o.items || []).map((it, i) => {
+                            const orig = [
+                              `Type:${[it.productName, it.size]
+                                .filter(Boolean)
+                                .join(" ") || "—"}`,
+                              it.color ? `Color:${it.color}` : "",
+                              it.personalization
+                                ? `Personalization:${it.personalization}`
+                                : "",
+                            ]
+                              .filter(Boolean)
+                              .join(",");
+                            return (
+                              <div
+                                key={i}
+                                title={orig}
+                                className="bg-amber-50 border border-amber-200 text-amber-700 text-[12px] font-medium rounded-lg px-3 py-1.5 max-w-[260px] truncate"
+                              >
+                                {orig}
+                              </div>
+                            );
+                          })}
+                          {!o.items?.length && (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="space-y-1.5">
+                          {(o.items || []).map((it, i) => (
+                            <div
+                              key={i}
+                              className="bg-[#F5F8FF] border border-[#DBE7FF] rounded-lg px-3 py-1.5 text-[12px] whitespace-nowrap"
+                            >
+                              <span className="bg-[#DBE7FF] text-[#2563EB] font-bold rounded px-1.5 py-0.5 mr-2">
+                                {it.quantity || 1}x
+                              </span>
+                              <span className="font-bold text-gray-800">
+                                {blankName(it.productSku)}
+                              </span>
+                              {(it.color || it.size) && (
+                                <span className="text-gray-400 italic">
+                                  {" "}
+                                  ({[it.color, it.size]
+                                    .filter(Boolean)
+                                    .join(" - ")})
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                          {!o.items?.length && (
+                            <span className="bg-[#EFF4FF] text-[#2563EB] text-[11px] font-medium rounded px-2 py-0.5">
+                              Unknown Product
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-3">
                         {(() => {
                           const it = o.items?.[0];
                           const img =
                             it?.mockupUrl || it?.frontUrl || it?.backUrl;
-                          if (!img)
+                          if (!img) {
+                            // Chưa có thiết kế -> icon ghi chú, hover xem ghi chú của đơn
+                            const note =
+                              o.note ||
+                              (o.items || [])
+                                .map((x) => x.note)
+                                .filter(Boolean)
+                                .join(" · ") ||
+                              "Chưa có thiết kế";
                             return (
-                              <span className="text-gray-300 text-xs italic">
-                                —
-                              </span>
+                              <Tooltip
+                                color="#FEFCE8"
+                                title={
+                                  <div className="text-center px-1 py-0.5">
+                                    <div className="text-[10px] font-bold tracking-widest text-[#B79351]">
+                                      GHI CHÚ:
+                                    </div>
+                                    <div className="border-t border-[#EADFC8] my-1" />
+                                    <div className="text-[13px] text-gray-800">
+                                      {note}
+                                    </div>
+                                  </div>
+                                }
+                              >
+                                <span className="w-9 h-9 rounded-lg border-2 border-[#C6A15B] bg-[#FBF6EC] inline-flex items-center justify-center cursor-help text-[15px]">
+                                  📝
+                                </span>
+                              </Tooltip>
                             );
+                          }
+                          // Nền + khung theo màu của item (vd Maroon)
+                          const bg = colorCss(it?.color);
+                          const bgStyle = bg
+                            ? { background: bg, borderColor: bg }
+                            : undefined;
                           return (
                             <Popover
                               placement="right"
                               content={
-                                <div className="w-[260px] h-[260px] flex items-center justify-center bg-gray-50 rounded-lg overflow-hidden">
+                                <div
+                                  style={bgStyle}
+                                  className={`w-[260px] h-[260px] flex items-center justify-center bg-gray-50 rounded-lg overflow-hidden ${
+                                    bg ? "p-2" : ""
+                                  }`}
+                                >
                                   <img
                                     src={toDirectImageUrl(img)}
                                     alt="design"
                                     referrerPolicy="no-referrer"
-                                    className="max-w-full max-h-full object-contain"
+                                    className="max-w-full max-h-full object-contain rounded"
                                   />
                                 </div>
                               }
                             >
-                              <img
-                                src={toDirectImageUrl(img)}
-                                alt="design"
-                                referrerPolicy="no-referrer"
-                                className="w-9 h-9 rounded-md object-cover border border-gray-200 bg-gray-50 cursor-zoom-in"
-                              />
+                              <span
+                                style={bgStyle}
+                                className={`inline-flex items-center justify-center w-9 h-9 rounded-md border border-gray-200 bg-gray-50 cursor-zoom-in overflow-hidden ${
+                                  bg ? "p-[3px]" : ""
+                                }`}
+                              >
+                                <img
+                                  src={toDirectImageUrl(img)}
+                                  alt="design"
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover rounded-[3px]"
+                                />
+                              </span>
                             </Popover>
                           );
                         })()}
@@ -718,38 +949,69 @@ export default function Sellers() {
                       <td className="p-3 text-right font-semibold whitespace-nowrap">
                         {money(o.total)}
                       </td>
+                      <td className="p-3 text-right whitespace-nowrap">
+                        <Tooltip
+                          title={
+                            <div className="text-xs leading-5">
+                              <div>Phí in thêm: +{money(f.markup)}</div>
+                              <div>Phí xử lý đơn: +{money(f.perOrderFee)}</div>
+                              <div>Ưu đãi: -{money(f.discount)}</div>
+                            </div>
+                          }
+                        >
+                          <span
+                            className={`inline-flex items-center gap-1 cursor-help text-[12px] font-semibold ${
+                              f.extra ? "text-orange-600" : "text-gray-300"
+                            }`}
+                          >
+                            <FiInfo size={13} />
+                            {f.extra < 0 ? "-" : "+"}
+                            {money(Math.abs(f.extra))}
+                          </span>
+                        </Tooltip>
+                      </td>
+                      <td className="p-3 text-right font-bold whitespace-nowrap">
+                        {money((o.total || 0) + f.extra)}
+                      </td>
                       <td className="p-3">
-                        <div className="flex flex-col gap-1">
-                          <Button size="small" onClick={() => setDetail(o)}>
-                            Chi tiết
-                          </Button>
+                        <div className="flex items-center gap-1.5">
+                          <Tooltip title="Chi tiết đơn">
+                            <button
+                              onClick={() => setDetail(o)}
+                              className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center cursor-pointer hover:bg-gray-100"
+                            >
+                              <FiEye size={14} />
+                            </button>
+                          </Tooltip>
                           {o.status === "pending_approval" && (
                             <Tooltip title="Duyệt đơn → Đang sản xuất">
-                              <Button
-                                size="small"
-                                type="primary"
-                                className="bg-[#171826]"
+                              <button
                                 onClick={() => approve(o, "in_production")}
+                                className="w-8 h-8 rounded-lg border-0 bg-[#171826] text-white inline-flex items-center justify-center cursor-pointer hover:bg-black"
                               >
-                                Duyệt SX
-                              </Button>
+                                <FiCheck size={14} />
+                              </button>
                             </Tooltip>
                           )}
                           {o.status === "in_production" && (
-                            <Button
-                              size="small"
-                              onClick={() => approve(o, "shipping")}
-                            >
-                              → Giao hàng
-                            </Button>
+                            <Tooltip title="Chuyển → Đang giao hàng">
+                              <button
+                                onClick={() => approve(o, "shipping")}
+                                className="w-8 h-8 rounded-lg border border-[#B2EBF2] bg-[#E0F7FA] text-[#0E7490] inline-flex items-center justify-center cursor-pointer hover:bg-[#0E7490] hover:text-white"
+                              >
+                                <FiTruck size={14} />
+                              </button>
+                            </Tooltip>
                           )}
                           {o.status === "shipping" && (
-                            <Button
-                              size="small"
-                              onClick={() => approve(o, "completed")}
-                            >
-                              → Hoàn thành
-                            </Button>
+                            <Tooltip title="Chuyển → Hoàn thành">
+                              <button
+                                onClick={() => approve(o, "completed")}
+                                className="w-8 h-8 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-600 inline-flex items-center justify-center cursor-pointer hover:bg-emerald-600 hover:text-white"
+                              >
+                                <FiCheckCircle size={14} />
+                              </button>
+                            </Tooltip>
                           )}
                         </div>
                       </td>
@@ -758,7 +1020,7 @@ export default function Sellers() {
                 })}
                 {!paged.length && (
                   <tr>
-                    <td colSpan={11} className="p-12 text-center text-gray-400">
+                    <td colSpan={14} className="p-12 text-center text-gray-400">
                       Không có đơn hàng nào
                     </td>
                   </tr>
@@ -984,9 +1246,34 @@ export default function Sellers() {
                   </div>
                 )}
 
-                <div className="text-right font-bold text-base">
-                  Tổng: {money(detail.total)}
-                </div>
+                {(() => {
+                  const f = feesOf(detail.userId);
+                  return (
+                    <div className="text-right space-y-0.5">
+                      <div className="text-gray-500">
+                        Giá đơn: {money(detail.total)}
+                      </div>
+                      {f.markup > 0 && (
+                        <div className="text-emerald-600">
+                          Phí in thêm (Markup): +{money(f.markup)}
+                        </div>
+                      )}
+                      {f.perOrderFee > 0 && (
+                        <div className="text-orange-600">
+                          Phí xử lý đơn: +{money(f.perOrderFee)}
+                        </div>
+                      )}
+                      {f.discount > 0 && (
+                        <div className="text-violet-600">
+                          Ưu đãi: -{money(f.discount)}
+                        </div>
+                      )}
+                      <div className="font-bold text-base">
+                        Tổng: {money((detail.total || 0) + f.extra)}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
           })()}
@@ -1005,7 +1292,10 @@ export default function Sellers() {
             const s = sellerDetail;
             const sStores = stores.filter((st) => st.userId === s.id);
             const sOrders = orders.filter((o) => o.userId === s.id);
-            const revenue = sOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+            const revenue =
+              sOrders.reduce((sum, o) => sum + (o.total || 0), 0) +
+              ((s.markup || 0) + (s.perOrderFee || 0) - (s.discount || 0)) *
+                sOrders.length;
             const Row = ({
               label,
               value,
@@ -1147,6 +1437,89 @@ export default function Sellers() {
             {selectedIds.length} đơn đã chọn
           </span>
           <div className="ml-auto flex items-center gap-3 flex-wrap">
+            {approvableSelected().length > 0 && (
+              <Popconfirm
+                title={`Duyệt ${approvableSelected().length} đơn chờ duyệt?`}
+                description="Các đơn sẽ chuyển sang Đang sản xuất."
+                okText="Duyệt"
+                cancelText="Hủy"
+                onConfirm={handleBulkApprove}
+              >
+                <button className="flex items-center gap-1.5 bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
+                  <FiCheckCircle size={15} /> Duyệt hàng loạt (
+                  {approvableSelected().length})
+                </button>
+              </Popconfirm>
+            )}
+            {approvableSelected().length > 0 && (
+              <Popconfirm
+                title={`Hủy ${approvableSelected().length} đơn chờ duyệt?`}
+                description="Các đơn sẽ chuyển sang Đã hủy."
+                okText="Hủy đơn"
+                cancelText="Đóng"
+                okButtonProps={{ danger: true }}
+                onConfirm={handleBulkCancel}
+              >
+                <button className="flex items-center gap-1.5 bg-[#DC2626] hover:bg-[#B91C1C] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
+                  <FiXCircle size={15} /> Hủy hàng loạt (
+                  {approvableSelected().length})
+                </button>
+              </Popconfirm>
+            )}
+            {supportSelected().length > 0 && (
+              <Popconfirm
+                title={`Duyệt đi lại ${supportSelected().length} đơn?`}
+                description="Các đơn sẽ chuyển sang Đơn Reship (RS)."
+                okText="Duyệt Reship"
+                cancelText="Đóng"
+                onConfirm={handleBulkReship}
+              >
+                <button className="flex items-center gap-1.5 bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
+                  <FiCheckCircle size={15} /> Duyệt đi lại đơn (Reship)
+                </button>
+              </Popconfirm>
+            )}
+            {supportSelected().length > 0 && (
+              <Popconfirm
+                title={`Hủy yêu cầu hỗ trợ của ${supportSelected().length} đơn?`}
+                description="Đơn sẽ trả về trạng thái trước khi seller gửi yêu cầu."
+                okText="Hủy yêu cầu"
+                cancelText="Đóng"
+                okButtonProps={{ danger: true }}
+                onConfirm={handleBulkUnsupport}
+              >
+                <button className="flex items-center gap-1.5 bg-[#DC2626] hover:bg-[#B91C1C] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
+                  <FiXCircle size={15} /> Hủy yêu cầu hỗ trợ
+                </button>
+              </Popconfirm>
+            )}
+            {reshipSelected().length > 0 && (
+              <Popconfirm
+                title={`Hủy ${reshipSelected().length} đơn Reship?`}
+                description="Đơn sẽ trả về trạng thái trước khi có yêu cầu hỗ trợ/reship."
+                okText="Hủy Reship"
+                cancelText="Đóng"
+                okButtonProps={{ danger: true }}
+                onConfirm={handleBulkUnreship}
+              >
+                <button className="flex items-center gap-1.5 bg-[#DC2626] hover:bg-[#B91C1C] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
+                  <FiXCircle size={15} /> Hủy đơn Reship
+                </button>
+              </Popconfirm>
+            )}
+            {revertableSelected().length > 0 && (
+              <Popconfirm
+                title={`Trả ${revertableSelected().length} đơn về trạng thái trước?`}
+                description="Vd: Hoàn thành → Đang giao hàng, Đang giao hàng → Đang sản xuất..."
+                okText="Trả lại"
+                cancelText="Hủy"
+                onConfirm={handleBulkRevert}
+              >
+                <button className="flex items-center gap-1.5 bg-[#374151] hover:bg-[#4B5563] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
+                  <FiRotateCcw size={15} /> Trả lại trạng thái trước
+                </button>
+              </Popconfirm>
+            )}
             <Popconfirm
               title={`Xóa vĩnh viễn ${selectedIds.length} đơn?`}
               description="Hành động này không thể hoàn tác."

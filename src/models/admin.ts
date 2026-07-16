@@ -59,6 +59,8 @@ export interface PodOrder {
   created: string;
   datePaid?: string | null;
   dateShipped?: string | null;
+  /** Trạng thái trước khi gửi Yêu cầu Hỗ trợ */
+  prevStatus?: string | null;
 }
 
 export interface LedgerEntry {
@@ -131,6 +133,78 @@ export interface BaseProduct {
   sizes?: string[];
   material?: string; // chất liệu
   specs?: string; // mô tả thông số chi tiết
+  created?: string;
+}
+
+/** Biến thể phôi theo file "Giá Sản Phẩm Teement": Sản phẩm × Màu × Size + các loại giá */
+export interface PodVariant {
+  id: string;
+  product: string;
+  color?: string;
+  size?: string;
+  price?: number; // Giá
+  shipPrice?: number; // Giá ship
+  printOneSide?: number; // In 1 mặt
+  printExtraArea?: number; // In vùng phụ
+  priceAK2?: number; // Giá AK2
+  priceFashship?: number; // Giá Fashship
+  price3D?: number; // Giá 3D
+  priceTeement?: number; // Giá Teement
+  created?: string;
+}
+
+/** Đơn gửi Nhà In (định dạng file "Nhà In AK2") */
+export interface PrintOrder {
+  id: string;
+  orderDate?: string;
+  orderId?: string;
+  orderSource?: string;
+  address1?: string;
+  address2?: string;
+  city?: string;
+  countryCode?: string;
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  state?: string;
+  zip?: string;
+  shippingMethod?: string;
+  shippingLabelUrl?: string;
+  productCode?: string;
+  size?: string;
+  color?: string;
+  sku?: string;
+  quantity?: number;
+  frontDesignUrl?: string;
+  frontMockupUrl?: string;
+  backDesignUrl?: string;
+  backMockupUrl?: string;
+  leftSleeveDesignUrl?: string;
+  leftSleeveMockupUrl?: string;
+  rightSleeveDesignUrl?: string;
+  rightSleeveMockupUrl?: string;
+  specialFrontDesignUrl?: string;
+  specialFrontMockupUrl?: string;
+  specialBackDesignUrl?: string;
+  specialBackMockupUrl?: string;
+  specialLeftSleeveDesignUrl?: string;
+  specialLeftSleeveMockupUrl?: string;
+  specialRightSleeveDesignUrl?: string;
+  specialRightSleeveMockupUrl?: string;
+  frontPrintSize?: string;
+  backPrintSize?: string;
+  producingService?: string;
+  technology?: string;
+  pushTracking?: string;
+  note?: string;
+  created?: string;
+}
+
+/** Mã màu phôi: tên màu (Black, Dark heather...) -> hex, dùng làm nền thiết kế */
+export interface PodColor {
+  id: string;
+  name: string;
+  hex: string;
   created?: string;
 }
 

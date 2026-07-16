@@ -153,6 +153,22 @@ export interface PodVariant {
   created?: string;
 }
 
+/** Danh mục Nhà In (tên nhà in để phân bổ đơn) */
+export interface PrintHouseItem {
+  id: string;
+  name: string;
+  created?: string;
+}
+
+/** Tracking vận chuyển: Order ID -> mã tracking + nhà vận chuyển */
+export interface TrackingRow {
+  id: string;
+  orderId?: string;
+  tracking?: string;
+  carrier?: string;
+  created?: string;
+}
+
 /** Đơn gửi Nhà In (định dạng file "Nhà In AK2") */
 export interface PrintOrder {
   id: string;
@@ -197,6 +213,8 @@ export interface PrintOrder {
   technology?: string;
   pushTracking?: string;
   note?: string;
+  /** Nhà in được phân bổ (đồng bộ từ Quản lý Seller) */
+  printHouse?: string;
   created?: string;
 }
 

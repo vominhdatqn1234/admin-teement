@@ -11,13 +11,21 @@ import {
   Modal,
   Pagination,
   Popconfirm,
+  Popover,
   Tooltip,
   message,
 } from "antd";
 import { useMemo, useRef, useState } from "react";
+import { imageUrlCandidates } from "../../lib/imageUrl";
 import { useQueryClient } from "react-query";
 import { FiDownload, FiEdit3, FiPlus, FiTrash2, FiUpload } from "react-icons/fi";
-import { usePrintOrderMutations, usePrintOrders } from "../../hooks/useAdmin";
+import {
+  usePrintHouseMutations,
+  usePrintHouses,
+  usePrintOrderMutations,
+  usePrintOrders,
+} from "../../hooks/useAdmin";
+import UploadImgButton from "../../components/UploadImgButton";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { sbUpsert } from "../../lib/supabase";
 import { PrintOrder } from "../../models/admin";
@@ -79,19 +87,222 @@ function genId(): string {
 const keyOf = (o: Partial<PrintOrder>) =>
   `${(o.orderId || "").trim()}|${(o.sku || "").trim().toLowerCase()}`;
 
-const linkCell = (url?: string) =>
-  url ? (
-    <a
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      className="text-[#2563EB] text-xs no-underline hover:underline"
+// Các field là link ảnh thiết kế/mockup -> hiện preview trong modal edit
+const IMG_KEYS = new Set(
+  FIELDS.map((f) => f.key).filter(
+    (k) => String(k).endsWith("DesignUrl") || String(k).endsWith("MockupUrl")
+  )
+);
+
+/** Preview ảnh nhỏ trong modal — tự cập nhật khi sửa link */
+function MiniPreview({ url }: { url?: string }) {
+  const [idx, setIdx] = useState(0);
+  const candidates = imageUrlCandidates(url || "");
+  if (!url)
+    return (
+      <span className="w-8 h-8 shrink-0 rounded-md border border-dashed border-gray-200 bg-gray-50 inline-flex items-center justify-center text-gray-300 text-[9px]">
+        —
+      </span>
+    );
+  if (idx >= candidates.length)
+    return (
+      <span className="w-8 h-8 shrink-0 rounded-md border border-red-100 bg-red-50 inline-flex items-center justify-center text-red-300 text-[9px]">
+        !
+      </span>
+    );
+  return (
+    <Popover
+      placement="left"
+      content={
+        <div className="w-[240px] h-[240px] flex items-center justify-center bg-gray-50 rounded-lg overflow-hidden">
+          <img
+            src={candidates[idx]}
+            alt="preview"
+            referrerPolicy="no-referrer"
+            className="max-w-full max-h-full object-contain"
+          />
+        </div>
+      }
     >
-      Link
-    </a>
-  ) : (
-    <span className="text-gray-300 text-xs">—</span>
+      <img
+        key={candidates[idx]}
+        src={candidates[idx]}
+        alt="preview"
+        referrerPolicy="no-referrer"
+        className="w-8 h-8 shrink-0 rounded-md object-cover border border-gray-200 bg-gray-50 cursor-zoom-in"
+        onError={() => setIdx((i) => i + 1)}
+      />
+    </Popover>
   );
+}
+
+/**
+ * Thumbnail thiết kế (hỗ trợ link Google Drive) + hover phóng to
+ * + hiển thị link ngay trên bảng, sửa nhanh rồi blur/Enter là lưu.
+ */
+function ImgLink({
+  url,
+  mockup,
+  onCommit,
+}: {
+  url?: string;
+  mockup?: string;
+  onCommit: (v: string) => void;
+}) {
+  const [idx, setIdx] = useState(0);
+  const src = url || mockup || "";
+  const candidates = imageUrlCandidates(src);
+  const img =
+    src && idx < candidates.length ? (
+      <img
+        key={candidates[idx]}
+        src={candidates[idx]}
+        alt="design"
+        referrerPolicy="no-referrer"
+        className="w-9 h-9 shrink-0 rounded-md object-cover border border-gray-200 bg-gray-50 cursor-zoom-in"
+        onError={() => setIdx((i) => i + 1)}
+      />
+    ) : null;
+  return (
+    <div className="flex items-center gap-1.5">
+      {img ? (
+        <Popover
+          placement="right"
+          content={
+            <div className="w-[260px] h-[260px] flex items-center justify-center bg-gray-50 rounded-lg overflow-hidden">
+              <img
+                src={candidates[idx]}
+                alt="design"
+                referrerPolicy="no-referrer"
+                className="max-w-full max-h-full object-contain"
+              />
+            </div>
+          }
+        >
+          {img}
+        </Popover>
+      ) : (
+        <span className="w-9 h-9 shrink-0 rounded-md border border-dashed border-gray-200 bg-gray-50 inline-flex items-center justify-center text-gray-300 text-[9px]">
+          —
+        </span>
+      )}
+      <div className="min-w-0">
+        <div className="flex items-center gap-1">
+          <Input
+            key={url || ""}
+            size="small"
+            placeholder="Dán link..."
+            defaultValue={url || ""}
+            className="w-[130px] text-[11px]"
+            onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v !== (url || "")) onCommit(v);
+            }}
+          />
+          <UploadImgButton size="small" onUploaded={onCommit} />
+        </div>
+        {src && (
+          <a
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[#2563EB] text-[10px] no-underline hover:underline"
+          >
+            Mở link ↗
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Danh mục tên Nhà In — nguồn cho dropdown "Nhà In" ở trang Quản lý Seller.
+ */
+function PrintHouseCatalog() {
+  const { printHouses } = usePrintHouses();
+  const mut = usePrintHouseMutations();
+  const [newName, setNewName] = useState("");
+
+  const addHouse = async () => {
+    const n = newName.trim();
+    if (!n) return;
+    if (printHouses.some((h) => h.name.trim().toLowerCase() === n.toLowerCase()))
+      return message.warning(`Nhà in "${n}" đã có`);
+    await mut.add.mutateAsync({ name: n, created: new Date().toISOString() });
+    message.success(`Đã thêm nhà in ${n}`);
+    setNewName("");
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-4 mt-4 bg-white">
+      <div className="font-semibold text-gray-800 text-[14px]">
+        Danh mục Nhà In
+      </div>
+      <p className="text-gray-400 text-xs mt-0.5 mb-3">
+        Danh sách tên nhà in để chọn ở ô "Nhà In" trên trang Quản lý Seller khi
+        phân bổ đơn. Sửa tên trực tiếp trong ô rồi Enter để lưu.
+      </p>
+      <div className="flex items-end gap-4 flex-wrap">
+        {printHouses.map((h) => (
+          <div key={h.id}>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              NHÀ IN
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-8 h-8 shrink-0 rounded-lg bg-[#171826] text-white text-[11px] font-bold inline-flex items-center justify-center">
+                {h.name.charAt(0).toUpperCase()}
+              </span>
+              <Input
+                key={h.name}
+                className="w-[130px] font-medium"
+                defaultValue={h.name}
+                onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v && v !== h.name) {
+                    mut.update.mutate({ id: h.id, name: v });
+                    message.success(`Đã đổi tên "${h.name}" → "${v}"`);
+                  }
+                }}
+              />
+              <Popconfirm
+                title={`Xóa nhà in "${h.name}"?`}
+                description="Các đơn đã gán tên này vẫn giữ nguyên."
+                okText="Xóa"
+                cancelText="Hủy"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => mut.remove.mutate(h.id)}
+              >
+                <button className="w-8 h-8 shrink-0 rounded-lg border border-red-100 bg-red-50 text-red-500 inline-flex items-center justify-center cursor-pointer hover:bg-red-500 hover:text-white">
+                  <FiTrash2 size={13} />
+                </button>
+              </Popconfirm>
+            </div>
+          </div>
+        ))}
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            THÊM NHÀ IN MỚI
+          </div>
+          <div className="flex items-center gap-1">
+            <Input
+              className="w-[160px]"
+              placeholder="Tên nhà in..."
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onPressEnter={addHouse}
+            />
+            <Button icon={<FiPlus />} onClick={addHouse}>
+              Thêm
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function PrintHouse() {
   const { printOrders } = usePrintOrders();
@@ -204,6 +415,8 @@ export default function PrintHouse() {
         gửi thẳng cho nhà in.
       </p>
 
+      <PrintHouseCatalog />
+
       {/* Thanh công cụ */}
       <div className="border border-gray-200 rounded-xl p-4 mt-4 bg-white flex items-end gap-3 flex-wrap">
         <div>
@@ -302,6 +515,7 @@ export default function PrintHouse() {
                   }
                 />
               </th>
+              <th className="p-2.5 font-medium">Nhà In</th>
               <th className="p-2.5 font-medium">Ngày</th>
               <th className="p-2.5 font-medium">Order ID</th>
               <th className="p-2.5 font-medium">Khách hàng</th>
@@ -309,8 +523,8 @@ export default function PrintHouse() {
               <th className="p-2.5 font-medium">SKU</th>
               <th className="p-2.5 font-medium">Màu / Size</th>
               <th className="p-2.5 font-medium text-center">SL</th>
-              <th className="p-2.5 font-medium text-center">Front</th>
-              <th className="p-2.5 font-medium text-center">Back</th>
+              <th className="p-2.5 font-medium">Front</th>
+              <th className="p-2.5 font-medium">Back</th>
               <th className="p-2.5 font-medium">In / Công nghệ</th>
               <th className="p-2.5 font-medium">Note</th>
               <th className="p-2.5 font-medium w-[90px]">Thao tác</th>
@@ -336,6 +550,15 @@ export default function PrintHouse() {
                     }
                   />
                 </td>
+                <td className="p-2.5">
+                  {o.printHouse ? (
+                    <span className="bg-[#EFF4FF] text-[#2563EB] text-[11px] font-semibold rounded px-2 py-0.5">
+                      {o.printHouse}
+                    </span>
+                  ) : (
+                    <span className="text-gray-300 text-xs">—</span>
+                  )}
+                </td>
                 <td className="p-2.5 whitespace-nowrap">
                   {o.orderDate || "—"}
                 </td>
@@ -358,11 +581,23 @@ export default function PrintHouse() {
                   {[o.color, o.size].filter(Boolean).join(" / ") || "—"}
                 </td>
                 <td className="p-2.5 text-center">{o.quantity || 1}</td>
-                <td className="p-2.5 text-center">
-                  {linkCell(o.frontDesignUrl)}
+                <td className="p-2.5">
+                  <ImgLink
+                    url={o.frontDesignUrl}
+                    mockup={o.frontMockupUrl}
+                    onCommit={(v) =>
+                      update.mutate({ id: o.id, frontDesignUrl: v } as any)
+                    }
+                  />
                 </td>
-                <td className="p-2.5 text-center">
-                  {linkCell(o.backDesignUrl)}
+                <td className="p-2.5">
+                  <ImgLink
+                    url={o.backDesignUrl}
+                    mockup={o.backMockupUrl}
+                    onCommit={(v) =>
+                      update.mutate({ id: o.id, backDesignUrl: v } as any)
+                    }
+                  />
                 </td>
                 <td className="p-2.5 text-xs whitespace-nowrap">
                   {[o.frontPrintSize, o.technology]
@@ -402,7 +637,7 @@ export default function PrintHouse() {
             ))}
             {!paged.length && (
               <tr>
-                <td colSpan={13} className="p-12 text-center text-gray-400">
+                <td colSpan={14} className="p-12 text-center text-gray-400">
                   {printOrders.length
                     ? "Không có dòng nào khớp tìm kiếm"
                     : "Chưa có dữ liệu — bấm Import CSV để nạp file Nhà In AK2"}
@@ -455,6 +690,25 @@ export default function PrintHouse() {
                       setEditing((e) => ({ ...e, quantity: v || 1 }))
                     }
                   />
+                ) : IMG_KEYS.has(key) ? (
+                  <div className="flex items-center gap-1.5">
+                    <MiniPreview
+                      key={(editing as any)[key] || "empty"}
+                      url={(editing as any)[key]}
+                    />
+                    <Input
+                      value={(editing as any)[key] || ""}
+                      onChange={(ev) =>
+                        setEditing((e) => ({ ...e, [key]: ev.target.value }))
+                      }
+                    />
+                    <UploadImgButton
+                      size="small"
+                      onUploaded={(url) =>
+                        setEditing((e) => ({ ...e, [key]: url }))
+                      }
+                    />
+                  </div>
                 ) : (
                   <Input
                     value={(editing as any)[key] || ""}

@@ -8,6 +8,7 @@ import {
   FiDroplet,
   FiTag,
   FiTruck,
+  FiNavigation,
   FiPenTool,
   FiPrinter,
   FiSettings,
@@ -27,6 +28,7 @@ const EXTENSIONS = [
   { to: "/app/shipping-prices", label: "Bảng giá Vận chuyển", icon: <FiTruck /> },
   { to: "/app/design-orders", label: "Đơn Thiết Kế", icon: <FiPenTool /> },
   { to: "/app/print-house", label: "Nhà In", icon: <FiPrinter /> },
+  { to: "/app/tracking", label: "Quản lý Tracking", icon: <FiNavigation /> },
 ];
 
 export default function AdminLayout() {

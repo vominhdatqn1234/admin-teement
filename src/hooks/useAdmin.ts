@@ -19,7 +19,9 @@ import {
   PodOrder,
   PodPrice,
   PodVariant,
+  PrintHouseItem,
   PrintOrder,
+  TrackingRow,
   Seller,
   ServiceItem,
   ShippingPrice,
@@ -38,6 +40,8 @@ const podPricesRef = collection(db, "podPrices");
 const colorsRef = collection(db, "podColors");
 const variantsRef = collection(db, "podVariants");
 const printOrdersRef = collection(db, "printOrders");
+const trackingsRef = collection(db, "trackings");
+const printHousesRef = collection(db, "printHouses");
 
 function toList<T>(snapshot: any): T[] {
   const out: T[] = [];
@@ -152,6 +156,24 @@ export function usePodPrices() {
   return { ...q, prices: toList<PodPrice>(q.data) };
 }
 export const usePodPriceMutations = crud(podPricesRef, "adm-pod-prices");
+
+/* ---------- Danh mục Nhà In ---------- */
+export function usePrintHouses() {
+  const q = useQuery(["adm-print-houses"], () =>
+    getDocs(query(printHousesRef, orderBy("name", "asc")))
+  );
+  return { ...q, printHouses: toList<PrintHouseItem>(q.data) };
+}
+export const usePrintHouseMutations = crud(printHousesRef, "adm-print-houses");
+
+/* ---------- Tracking vận chuyển ---------- */
+export function useTrackings() {
+  const q = useQuery(["adm-trackings"], () =>
+    getDocs(query(trackingsRef, orderBy("created", "desc")))
+  );
+  return { ...q, trackings: toList<TrackingRow>(q.data) };
+}
+export const useTrackingMutations = crud(trackingsRef, "adm-trackings");
 
 /* ---------- Đơn gửi Nhà In (định dạng AK2) ---------- */
 export function usePrintOrders() {

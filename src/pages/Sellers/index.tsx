@@ -1,4 +1,5 @@
 import {
+  AutoComplete,
   Button,
   Checkbox,
   DatePicker,
@@ -34,12 +35,15 @@ import {
   useOrderMutations,
   useOrders,
   usePodColors,
+  usePrintHouses,
   useSellerMutations,
   useSellers,
   useStoreMutations,
   useStores,
 } from "../../hooks/useAdmin";
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
+import { sbUpsert } from "../../lib/supabase";
+import { useQueryClient } from "react-query";
 import { ORDER_STATUS, PodOrder, Seller } from "../../models/admin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { toDirectImageUrl } from "../../lib/imageUrl";
@@ -77,6 +81,7 @@ export default function Sellers() {
   const sellerMut = useSellerMutations();
   const storeMut = useStoreMutations();
   const orderMut = useOrderMutations();
+  const qc = useQueryClient();
 
   const [statusTab, setStatusTab] = useState("all");
   const [filterSeller, setFilterSeller] = useState<string>("");
@@ -322,11 +327,27 @@ export default function Sellers() {
       message.info(`Bỏ qua ${skipped} đơn không có trạng thái trước để lùi`);
     setSelectedIds([]);
   };
-  const handleAssignPrinter = () => {
-    // TODO: chưa có model Nhà In để phân bổ
-    message.info(
-      `Phân bổ ${selectedIds.length} đơn cho Nhà In — tính năng đang phát triển`
+  // Phân bổ Nhà In hàng loạt: gán tên + đồng bộ phiếu in sang tab Nhà In
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignHouse, setAssignHouse] = useState<string | null>(null);
+  const handleAssignPrinter = async () => {
+    if (!assignHouse) return;
+    let orderCount = 0;
+    let rowCount = 0;
+    for (const o of selectedOrders()) {
+      await orderMut.update.mutateAsync({
+        id: o.id,
+        printHouse: assignHouse,
+      } as any);
+      rowCount += await syncPrintOrders(o, assignHouse);
+      orderCount++;
+    }
+    message.success(
+      `Đã phân bổ ${orderCount} đơn cho Nhà In ${assignHouse} (đồng bộ ${rowCount} dòng phiếu in)`
     );
+    setAssignOpen(false);
+    setAssignHouse(null);
+    setSelectedIds([]);
   };
 
   // Import tracking: CSV cột "Order ID" + "Tracking"
@@ -334,8 +355,10 @@ export default function Sellers() {
     const rows = parseCSV(await file.text());
     let count = 0;
     for (const r of rows) {
-      const code = r["Order ID"] || r["orderCode"] || r["Mã đơn"];
-      const tracking = r["Tracking"] || r["tracking"];
+      // Nhận cả file "Trackking.csv" (Oder ID / Track / Nhà vận chuyển)
+      const code =
+        r["Order ID"] || r["Oder ID"] || r["orderCode"] || r["Mã đơn"];
+      const tracking = r["Tracking"] || r["Track"] || r["tracking"];
       if (!code || !tracking) continue;
       const order = orders.find((o) => o.orderCode === String(code).trim());
       if (!order) continue;
@@ -365,10 +388,64 @@ export default function Sellers() {
     );
   };
 
+  // Đồng bộ đơn sang tab Nhà In (bảng printOrders) — mỗi item 1 dòng phiếu in.
+  // Id cố định theo mã đơn + số thứ tự item nên gán lại nhà in chỉ update, không tạo trùng.
+  const syncPrintOrders = async (o: PodOrder, printHouse: string) => {
+    const name = (o.customerName || "").trim();
+    const parts = name.split(/\s+/);
+    const rows = (o.items || []).map((it, i) => ({
+      id: `po-${o.orderCode}-${i}`,
+      orderDate: o.created ? dayjs(o.created).format("D/M/YYYY") : "",
+      orderId: o.orderCode || "",
+      orderSource: (o as any).source || "",
+      address1: o.address1 || "",
+      address2: (o as any).address2 || "",
+      city: o.city || "",
+      countryCode: o.country || "",
+      firstName: parts.slice(0, 1).join(" "),
+      lastName: parts.slice(1).join(" "),
+      phone: (o as any).customerPhone || "",
+      state: o.state || "",
+      zip: o.zip || "",
+      shippingMethod: "Standard",
+      productCode: it.productSku || "",
+      size: it.size || "",
+      color: it.color || "",
+      sku: it.sku || it.productSku || "",
+      quantity: it.quantity || 1,
+      frontDesignUrl: it.frontUrl || "",
+      frontMockupUrl: it.mockupUrl || "",
+      backDesignUrl: it.backUrl || "",
+      backMockupUrl: it.backUrl ? it.mockupUrl || "" : "",
+      note: it.note || o.note || "",
+      printHouse,
+      created: new Date().toISOString(),
+    }));
+    if (rows.length) {
+      await sbUpsert("printOrders", rows);
+      qc.invalidateQueries(["adm-print-orders"]);
+    }
+    return rows.length;
+  };
+
   const savePrintHouse = async (o: PodOrder, printHouse: string) => {
     await orderMut.update.mutateAsync({ id: o.id, printHouse } as any);
-    message.success(`Đã cập nhật Nhà In cho đơn ${o.orderCode}`);
+    if (printHouse) {
+      const n = await syncPrintOrders(o, printHouse);
+      message.success(
+        `Đơn ${o.orderCode} → Nhà In ${printHouse} (đã đồng bộ ${n} dòng phiếu in)`
+      );
+    } else {
+      message.success(`Đã bỏ Nhà In của đơn ${o.orderCode}`);
+    }
   };
+
+  // Gợi ý Nhà In: lấy từ Danh mục Nhà In (tab Nhà In)
+  const { printHouses } = usePrintHouses();
+  const printHouseOptions = useMemo(
+    () => printHouses.map((h) => ({ value: h.name })),
+    [printHouses]
+  );
 
   return (
     <div>
@@ -905,17 +982,26 @@ export default function Sellers() {
                         })()}
                       </td>
                       <td className="p-3">
-                        <Input
+                        <AutoComplete
                           key={o.printHouse || ""}
                           size="small"
                           placeholder="Nhà in..."
                           defaultValue={o.printHouse || ""}
-                          className="w-[120px]"
-                          onPressEnter={(e) =>
-                            (e.target as HTMLInputElement).blur()
+                          className="w-[130px]"
+                          options={printHouseOptions}
+                          filterOption={(input, opt) =>
+                            String(opt?.value || "")
+                              .toLowerCase()
+                              .includes(input.toLowerCase())
                           }
+                          onSelect={(v) => {
+                            if (v !== (o.printHouse || ""))
+                              savePrintHouse(o, String(v));
+                          }}
                           onBlur={(e) => {
-                            const v = e.target.value.trim();
+                            const v = (
+                              e.target as HTMLInputElement
+                            ).value.trim();
                             if (v !== (o.printHouse || "")) savePrintHouse(o, v);
                           }}
                         />
@@ -1054,6 +1140,40 @@ export default function Sellers() {
           </div>
         </div>
       </div>
+
+      {/* Modal phân bổ Nhà In hàng loạt */}
+      <Modal
+        open={assignOpen}
+        title={`Phân bổ ${selectedIds.length} đơn cho Nhà In`}
+        okText="Phân bổ"
+        cancelText="Hủy"
+        okButtonProps={{ disabled: !assignHouse }}
+        onOk={handleAssignPrinter}
+        onCancel={() => {
+          setAssignOpen(false);
+          setAssignHouse(null);
+        }}
+      >
+        <div className="pt-2">
+          <div className="text-xs text-gray-500 mb-1">
+            Chọn nhà in (quản lý danh mục ở tab Nhà In)
+          </div>
+          <Select
+            className="w-full"
+            placeholder="-- Chọn nhà in --"
+            value={assignHouse || undefined}
+            onChange={(v) => setAssignHouse(v)}
+            options={printHouseOptions.map((o) => ({
+              value: o.value,
+              label: o.value,
+            }))}
+          />
+          <p className="text-xs text-gray-400 mt-3 mb-0">
+            Mỗi đơn sẽ được gán tên nhà in và tự đồng bộ phiếu in (mỗi sản phẩm
+            1 dòng) sang tab Nhà In.
+          </p>
+        </div>
+      </Modal>
 
       {/* Modal sửa thông tin seller */}
       <Modal
@@ -1539,7 +1659,7 @@ export default function Sellers() {
               <FiDownload size={15} /> Tải CSV
             </button>
             <button
-              onClick={handleAssignPrinter}
+              onClick={() => setAssignOpen(true)}
               className="flex items-center gap-1.5 bg-[#059669] hover:bg-[#047857] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer"
             >
               <FiTruck size={15} /> Phân bổ Nhà In

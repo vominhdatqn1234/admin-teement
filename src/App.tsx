@@ -9,6 +9,7 @@ import Finance from "./pages/Finance";
 import Login from "./pages/Login";
 import PodPrices from "./pages/PodPrices";
 import PrintHouse from "./pages/PrintHouse";
+import Tracking from "./pages/Tracking";
 import Sellers from "./pages/Sellers";
 import Services from "./pages/Services";
 import ShippingPrices from "./pages/ShippingPrices";
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="blanks" element={<Blanks />} />
             <Route path="colors" element={<Colors />} />
             <Route path="print-house" element={<PrintHouse />} />
+            <Route path="tracking" element={<Tracking />} />
             <Route path="pod-prices" element={<PodPrices />} />
             <Route path="shipping-prices" element={<ShippingPrices />} />
             <Route path="design-orders" element={<DesignOrders />} />

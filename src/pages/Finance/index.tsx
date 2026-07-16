@@ -66,11 +66,18 @@ export default function Finance() {
       .filter((s) => s.permission !== "Admin")
       .map((seller) => {
         const sellerStores = stores.filter((st) => st.userId === seller.id);
+        // Phí cộng thêm mỗi đơn của seller: Markup + Phí xử lý đơn - Ưu đãi
+        const extraPerOrder =
+          (seller.markup || 0) +
+          (seller.perOrderFee || 0) -
+          (seller.discount || 0);
         const storeStats: StoreStat[] = sellerStores.map((store) => {
           const storeOrders = orders.filter(
             (o) => o.storeId === store.id && PAID_STATUSES.includes(o.status)
           );
-          const revenue = storeOrders.reduce((s, o) => s + (o.total || 0), 0);
+          const revenue =
+            storeOrders.reduce((s, o) => s + (o.total || 0), 0) +
+            extraPerOrder * storeOrders.length;
           const matched = entries
             .filter((e) => e.storeId === store.id)
             .reduce((s, e) => s + (e.amount || 0), 0);

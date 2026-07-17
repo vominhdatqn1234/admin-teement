@@ -433,8 +433,9 @@ function PrintHouseSkuManager() {
 
   const handleExport = () => {
     if (!rows.length) return message.warning("Không có dòng để xuất");
+    const safeHouse = house.trim().replace(/[^a-zA-Z0-9-_]+/g, "-");
     downloadCSV(
-      `sku-${house}.csv`,
+      `sku-${safeHouse}.csv`,
       toCSV(
         ["Product name", "Style", "Brand", "Color", "Size", "Variant ID"],
         rows.map((r) => [
@@ -506,6 +507,8 @@ function PrintHouseSkuManager() {
         >
           {importing
             ? `Đang import ${importing.done}/${importing.total}...`
+            : house
+            ? `Import CSV → ${house}`
             : "Import CSV (SK2)"}
         </Button>
         <Button icon={<FiDownload />} onClick={handleExport} disabled={!rows.length}>

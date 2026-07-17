@@ -29,6 +29,7 @@ export interface SbSelectOptions {
   filters?: SbFilter[];
   order?: { column: string; ascending: boolean }[];
   limit?: number;
+  offset?: number;
 }
 
 export type SbRow = { id: string } & Record<string, any>;
@@ -59,6 +60,7 @@ function buildQuery(options: SbSelectOptions): string {
     params.push(`order=${encodeURIComponent(order)}`);
   }
   if (options.limit) params.push(`limit=${options.limit}`);
+  if (options.offset) params.push(`offset=${options.offset}`);
   return params.join("&");
 }
 
@@ -71,6 +73,27 @@ export async function sbSelect(
     { headers: baseHeaders }
   );
   return (await handle(res)) || [];
+}
+
+/**
+ * Lấy TẤT CẢ dòng của bảng (vượt giới hạn ~1000 dòng mặc định của PostgREST)
+ * bằng cách phân trang theo offset. Dùng cho bảng lớn như podVariants.
+ */
+export async function sbSelectAll(
+  table: string,
+  options: SbSelectOptions = {}
+): Promise<SbRow[]> {
+  const CHUNK = 1000;
+  const all: SbRow[] = [];
+  let offset = 0;
+  for (;;) {
+    const rows = await sbSelect(table, { ...options, limit: CHUNK, offset });
+    if (!rows.length) break;
+    all.push(...rows);
+    if (rows.length < CHUNK) break;
+    offset += rows.length;
+  }
+  return all;
 }
 
 export async function sbSelectById(

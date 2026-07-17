@@ -35,7 +35,9 @@ import {
   useOrderMutations,
   useOrders,
   usePodColors,
+  usePodVariants,
   usePrintHouses,
+  usePrintHouseSkus,
   useSellerMutations,
   useSellers,
   useStoreMutations,
@@ -55,6 +57,7 @@ const STATUS_TABS = [
   { key: "completed", label: "Hoàn thành" },
   { key: "support", label: "Yêu cầu Hỗ trợ" },
   { key: "reship", label: "Đơn Reship (RS)" },
+  { key: "refund", label: "Hoàn tiền" },
   { key: "all", label: "Tất cả đơn" },
 ];
 
@@ -208,9 +211,14 @@ export default function Sellers() {
     downloadCSV(
       filename,
       toCSV(
-        ["Order ID", "Status", "Shop", "Customer", "Date", "Paid", "Tracking", "Price", "Markup", "Order Fee", "Discount", "Total"],
+        ["Order ID", "Status", "Shop", "Customer", "Date", "Paid", "Tracking", "Print Area", "Price", "Markup", "Order Fee", "Discount", "Total"],
         list.map((o) => {
           const f = feesOf(o.userId);
+          const printArea = (o.items || []).some(
+            (it) => it.printArea === "special"
+          )
+            ? "Vùng in đặc biệt"
+            : "Mặc định";
           return [
             o.orderCode,
             ORDER_STATUS[o.status]?.label || o.status,
@@ -219,6 +227,7 @@ export default function Sellers() {
             dayjs(o.created).format("DD/MM/YYYY"),
             o.datePaid ? dayjs(o.datePaid).format("DD/MM/YYYY") : "Chưa thanh toán",
             o.tracking || "",
+            printArea,
             (o.total || 0).toFixed(2),
             f.markup.toFixed(2),
             f.perOrderFee.toFixed(2),
@@ -417,6 +426,9 @@ export default function Sellers() {
       frontMockupUrl: it.mockupUrl || "",
       backDesignUrl: it.backUrl || "",
       backMockupUrl: it.backUrl ? it.mockupUrl || "" : "",
+      // Vùng in -> ghi vào Front Print Size của phiếu in
+      frontPrintSize:
+        it.printArea === "special" ? "Vùng in đặc biệt" : "Mặc định",
       note: it.note || o.note || "",
       printHouse,
       created: new Date().toISOString(),
@@ -445,6 +457,113 @@ export default function Sellers() {
   const printHouseOptions = useMemo(
     () => printHouses.map((h) => ({ value: h.name })),
     [printHouses]
+  );
+
+  // Data SKU riêng của từng Nhà In (để tra Variant ID theo Brand + Màu + Size)
+  const { phSkus } = usePrintHouseSkus();
+  const findVariantId = (house?: string, it?: any): string => {
+    if (!house || !it || !phSkus.length) return "";
+    const color = (it.color || "").trim().toLowerCase();
+    const size = (it.size || "").trim().toLowerCase();
+    const brandCands = [it.productName, blankName(it.productSku), it.productSku]
+      .map((x) => (x || "").trim().toLowerCase())
+      .filter(Boolean);
+    const row = phSkus.find(
+      (r) =>
+        r.printHouse === house &&
+        brandCands.includes((r.brand || "").trim().toLowerCase()) &&
+        (r.color || "").trim().toLowerCase() === color &&
+        (r.size || "").trim().toLowerCase() === size
+    );
+    return row?.variantId || "";
+  };
+
+  // Bảng giá phôi POD — dùng để breakdown giá (giá gốc + các khoản cộng thêm)
+  const { variants } = usePodVariants();
+  const findVar = (it: any) => {
+    const nrm = (x?: string) => (x || "").trim().toLowerCase();
+    const brandCands = [it.productName, blankName(it.productSku), it.productSku]
+      .map(nrm)
+      .filter(Boolean);
+    const pool = variants.filter((v) => brandCands.includes(nrm(v.product)));
+    if (!pool.length) return undefined;
+    const size = nrm(it.size);
+    const bySize = size ? pool.filter((v) => nrm(v.size) === size) : pool;
+    const p2 = bySize.length ? bySize : pool;
+    const color = nrm(it.color);
+    return p2.find((v) => nrm(v.color) === color) || p2[0];
+  };
+
+  // Nội dung tooltip breakdown giá cho 1 đơn (hiển thị, không đổi tổng tiền)
+  const priceTooltip = (o: PodOrder) => (
+    <div className="text-xs leading-5">
+      {(o.items || []).map((it: any, i: number) => {
+        const v = findVar(it);
+        if (!v)
+          return (
+            <div key={i} className="text-white/70">
+              {blankName(it.productSku)}: chưa có trong bảng giá phôi
+            </div>
+          );
+        const twoSide = !!(
+          (it.backUrl || "").trim() || (it.mockupUrl || "").trim()
+        );
+        const special =
+          it.printArea === "special" || (it.extraAreas?.length || 0) > 0;
+        const extra = special ? v.printExtraArea || 0 : 0;
+        const base = twoSide
+          ? (v.price || 0) + (v.shipPrice || 0) + (v.printOneSide || 0)
+          : v.priceTeement || 0;
+        const unit = base + extra;
+        const qty = it.quantity || 1;
+        const hasHousePrice =
+          (v.priceAK2 || 0) > 0 ||
+          (v.priceFashship || 0) > 0 ||
+          (v.price3D || 0) > 0;
+        return (
+          <div
+            key={i}
+            className={i > 0 ? "mt-2 pt-2 border-t border-white/20" : ""}
+          >
+            {(o.items?.length || 0) > 1 && (
+              <div className="font-semibold mb-0.5">
+                SP{i + 1}: {blankName(it.productSku)}
+              </div>
+            )}
+            {twoSide ? (
+              <>
+                <div>Giá gốc: {money(v.price || 0)}</div>
+                <div>Giá ship: +{money(v.shipPrice || 0)}</div>
+                <div>In 1 mặt (2 mặt): +{money(v.printOneSide || 0)}</div>
+              </>
+            ) : (
+              <div>
+                Giá Teement (giá gốc + ship): {money(v.priceTeement || 0)}
+              </div>
+            )}
+            {special && <div>In vùng phụ: +{money(v.printExtraArea || 0)}</div>}
+            <div className="font-semibold mt-0.5">
+              Đơn giá: {money(unit)} × {qty} = {money(unit * qty)}
+            </div>
+            {o.printHouse && (
+              <div className="mt-1 pt-1 border-t border-white/20">
+                <div className="text-white/80">
+                  Giá nhà in ({o.printHouse}):
+                </div>
+                {(v.priceAK2 || 0) > 0 && <div>AK2: {money(v.priceAK2 || 0)}</div>}
+                {(v.priceFashship || 0) > 0 && (
+                  <div>Fashship: {money(v.priceFashship || 0)}</div>
+                )}
+                {(v.price3D || 0) > 0 && <div>3D: {money(v.price3D || 0)}</div>}
+                {!hasHousePrice && (
+                  <div className="text-white/60">— chưa có giá nhà in</div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 
   return (
@@ -777,8 +896,10 @@ export default function Sellers() {
                   <th className="p-3 font-bold text-[#2563EB]">
                     Phôi Fulfill
                   </th>
+                  <th className="p-3 font-medium">Vùng in</th>
                   <th className="p-3 font-medium">Thiết kế</th>
                   <th className="p-3 font-medium">Nhà In</th>
+                  <th className="p-3 font-medium">Variant ID</th>
                   <th className="p-3 font-medium">Tracking</th>
                   <th className="p-3 font-medium text-right">Giá</th>
                   <th className="p-3 font-medium text-right">Phí</th>
@@ -906,6 +1027,28 @@ export default function Sellers() {
                         </div>
                       </td>
                       <td className="p-3">
+                        <div className="space-y-1.5">
+                          {(o.items || []).map((it, i) =>
+                            it.printArea === "special" ? (
+                              <div key={i}>
+                                <span className="bg-orange-50 border border-orange-200 text-orange-600 text-[11px] font-bold rounded-md px-2 py-1 whitespace-nowrap">
+                                  Đặc biệt +$2
+                                </span>
+                              </div>
+                            ) : (
+                              <div key={i}>
+                                <span className="text-gray-400 text-[11px] whitespace-nowrap">
+                                  Mặc định
+                                </span>
+                              </div>
+                            )
+                          )}
+                          {!o.items?.length && (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3">
                         {(() => {
                           const it = o.items?.[0];
                           const img =
@@ -1007,33 +1150,53 @@ export default function Sellers() {
                         />
                       </td>
                       <td className="p-3">
-                        {o.status === "shipping" ? (
-                          <Input
-                            key={o.tracking || ""}
-                            size="small"
-                            placeholder="Nhập mã tracking..."
-                            defaultValue={o.tracking || ""}
-                            className="w-[150px]"
-                            onPressEnter={(e) =>
-                              (e.target as HTMLInputElement).blur()
-                            }
-                            onBlur={(e) => {
-                              const v = e.target.value.trim();
-                              if (v !== (o.tracking || "")) saveTracking(o, v);
-                            }}
-                          />
-                        ) : o.tracking ? (
-                          <span className="text-[#2563EB] text-xs">
-                            {o.tracking}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400 italic text-xs">
-                            Chưa có
-                          </span>
-                        )}
+                        {/* Variant ID tự tra theo Nhà In + phôi/màu/size của từng món */}
+                        <div className="space-y-1.5">
+                          {(o.items || []).map((it, i) => {
+                            const vid = findVariantId(o.printHouse, it);
+                            return (
+                              <div key={i} className="whitespace-nowrap">
+                                {vid ? (
+                                  <span className="font-mono text-[11px] bg-[#EFF4FF] text-[#2563EB] rounded px-1.5 py-0.5">
+                                    {vid}
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-300 text-[11px] italic">
+                                    {o.printHouse ? "Chưa có mã" : "—"}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {!o.items?.length && (
+                            <span className="text-gray-300 text-[11px]">—</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        {/* Cho sửa tracking ở MỌI trạng thái đơn */}
+                        <Input
+                          key={o.tracking || ""}
+                          size="small"
+                          placeholder="Nhập mã tracking..."
+                          defaultValue={o.tracking || ""}
+                          className="w-[150px]"
+                          onPressEnter={(e) =>
+                            (e.target as HTMLInputElement).blur()
+                          }
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v !== (o.tracking || "")) saveTracking(o, v);
+                          }}
+                        />
                       </td>
                       <td className="p-3 text-right font-semibold whitespace-nowrap">
-                        {money(o.total)}
+                        <Tooltip title={priceTooltip(o)}>
+                          <span className="cursor-help inline-flex items-center gap-1">
+                            <FiInfo size={12} className="text-gray-300" />
+                            {money(o.total)}
+                          </span>
+                        </Tooltip>
                       </td>
                       <td className="p-3 text-right whitespace-nowrap">
                         <Tooltip
@@ -1106,7 +1269,7 @@ export default function Sellers() {
                 })}
                 {!paged.length && (
                   <tr>
-                    <td colSpan={14} className="p-12 text-center text-gray-400">
+                    <td colSpan={16} className="p-12 text-center text-gray-400">
                       Không có đơn hàng nào
                     </td>
                   </tr>

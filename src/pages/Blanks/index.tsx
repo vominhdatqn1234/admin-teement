@@ -12,13 +12,21 @@ import {
   message,
 } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FiDownload, FiEdit3, FiPlus, FiTrash2, FiUpload } from "react-icons/fi";
+import {
+  FiDownload,
+  FiEdit3,
+  FiPlus,
+  FiRefreshCw,
+  FiTrash2,
+  FiUpload,
+} from "react-icons/fi";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import {
   useBaseProductMutations,
   useBaseProducts,
+  usePodVariants,
 } from "../../hooks/useAdmin";
-import { BaseProduct } from "../../models/admin";
+import { BaseProduct, PodVariant } from "../../models/admin";
 import { toDirectImageUrl } from "../../lib/imageUrl";
 import UploadImgButton from "../../components/UploadImgButton";
 
@@ -43,8 +51,13 @@ function Field({
 
 export default function Blanks() {
   const { products } = useBaseProducts();
+  const { variants } = usePodVariants();
   const { add, update, remove, removeMany } = useBaseProductMutations();
   const [search, setSearch] = useState("");
+  const [syncProgress, setSyncProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -161,6 +174,71 @@ export default function Blanks() {
         ])
       )
     );
+  };
+
+  /**
+   * Đồng bộ danh mục phôi từ Bảng giá POD (podVariants):
+   * mỗi sản phẩm trong bảng giá → 1 phôi, kèm màu/size lấy từ các biến thể.
+   * Trùng tên → cập nhật màu/size (giữ nguyên các thông tin khác);
+   * chưa có → thêm phôi mới.
+   */
+  const handleSyncFromPrices = async () => {
+    const byProduct = new Map<string, PodVariant[]>();
+    variants.forEach((v) => {
+      const p = (v.product || "").trim();
+      if (!p) return;
+      if (!byProduct.has(p)) byProduct.set(p, []);
+      byProduct.get(p)!.push(v);
+    });
+    const entries = Array.from(byProduct.entries());
+    const total = entries.length;
+    if (!total) return message.warning("Bảng giá POD chưa có dữ liệu");
+    setSyncProgress({ done: 0, total });
+    let added = 0;
+    let updated = 0;
+    let done = 0;
+    try {
+      for (const [product, rows] of entries) {
+        const colors = Array.from(
+          new Set(rows.map((r) => (r.color || "").trim()).filter(Boolean))
+        );
+        const sizes = Array.from(
+          new Set(rows.map((r) => (r.size || "").trim()).filter(Boolean))
+        );
+        const existing = products.find(
+          (p) => p.name.trim().toLowerCase() === product.toLowerCase()
+        );
+        if (existing) {
+          // Chỉ cập nhật màu/size, giữ nguyên SKU/giá/ảnh/chất liệu...
+          await update.mutateAsync({ id: existing.id, colors, sizes });
+          updated++;
+        } else {
+          await add.mutateAsync({
+            name: product,
+            sku: product,
+            category: "POD",
+            colors,
+            sizes,
+            baseCost: rows[0]?.priceTeement || 0,
+            inStock: true,
+            image: "",
+            material: "",
+            specs: "",
+            created: new Date().toISOString(),
+          } as any);
+          added++;
+        }
+        done++;
+        setSyncProgress({ done, total });
+      }
+      message.success(
+        `Đồng bộ từ Bảng giá POD xong: thêm ${added}, cập nhật ${updated} phôi`
+      );
+    } catch (e: any) {
+      message.error(`Đồng bộ lỗi: ${e?.message || e}`);
+    } finally {
+      setSyncProgress(null);
+    }
   };
 
   const list = products.filter(
@@ -280,6 +358,27 @@ export default function Blanks() {
           <Button icon={<FiDownload />} onClick={handleExportCatalog}>
             Xuất Catalog
           </Button>
+          <Popconfirm
+            title="Đồng bộ phôi từ Bảng giá POD?"
+            description={`Tạo/cập nhật phôi theo ${
+              new Set(variants.map((v) => (v.product || "").trim()).filter(Boolean))
+                .size
+            } sản phẩm trong bảng giá (kèm màu/size). Không xoá phôi hiện có.`}
+            okText="Đồng bộ"
+            cancelText="Hủy"
+            onConfirm={handleSyncFromPrices}
+            disabled={!!syncProgress}
+          >
+            <Button
+              icon={<FiRefreshCw />}
+              loading={!!syncProgress}
+              disabled={!variants.length}
+            >
+              {syncProgress
+                ? `Đang đồng bộ ${syncProgress.done}/${syncProgress.total}...`
+                : "Đồng bộ từ Bảng giá POD"}
+            </Button>
+          </Popconfirm>
           <input
             ref={csvRef}
             type="file"
@@ -324,6 +423,29 @@ export default function Blanks() {
           <div className="text-xs text-gray-400 mt-1">
             Vui lòng không đóng trang trong lúc nhập.
           </div>
+        </div>
+      )}
+
+      {/* Tiến trình đồng bộ từ Bảng giá POD */}
+      {syncProgress && (
+        <div className="bg-[#F0FDF4] border border-[#BBF7D0] rounded-xl px-5 py-4 mt-5">
+          <div className="flex items-center justify-between font-semibold text-[#15803D] mb-2 text-sm">
+            <span>
+              🔄 Đang đồng bộ phôi từ Bảng giá POD... {syncProgress.done}/
+              {syncProgress.total}
+            </span>
+            <span>
+              {Math.round((syncProgress.done / syncProgress.total) * 100)}%
+            </span>
+          </div>
+          <Progress
+            percent={Math.round(
+              (syncProgress.done / syncProgress.total) * 100
+            )}
+            showInfo={false}
+            status="active"
+            strokeColor="#22C55E"
+          />
         </div>
       )}
 

@@ -12,16 +12,20 @@ import {
   Pagination,
   Popconfirm,
   Popover,
+  Progress,
+  Select,
   Tooltip,
   message,
 } from "antd";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { imageUrlCandidates } from "../../lib/imageUrl";
 import { useQueryClient } from "react-query";
 import { FiDownload, FiEdit3, FiPlus, FiTrash2, FiUpload } from "react-icons/fi";
 import {
   usePrintHouseMutations,
   usePrintHouses,
+  usePrintHouseSkuMutations,
+  usePrintHouseSkus,
   usePrintOrderMutations,
   usePrintOrders,
 } from "../../hooks/useAdmin";
@@ -304,6 +308,355 @@ function PrintHouseCatalog() {
   );
 }
 
+const skuKeyOf = (
+  house: string,
+  brand?: string,
+  color?: string,
+  size?: string
+) =>
+  `${house}|${(brand || "").trim().toLowerCase()}|${(color || "")
+    .trim()
+    .toLowerCase()}|${(size || "").trim().toLowerCase()}`;
+
+/**
+ * Data SKU riêng theo từng Nhà In (file SK2): chọn nhà in → Import CSV
+ * (Brand=tên sản phẩm, Color, Size, Variant ID) → tra Variant ID theo đơn.
+ */
+function PrintHouseSkuManager() {
+  const { printHouses } = usePrintHouses();
+  const { phSkus } = usePrintHouseSkus();
+  const { removeMany } = usePrintHouseSkuMutations();
+  const qc = useQueryClient();
+
+  const [house, setHouse] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [importing, setImporting] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!house && printHouses.length) setHouse(printHouses[0].name);
+  }, [printHouses, house]);
+
+  const rows = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    return phSkus
+      .filter((r) => r.printHouse === house)
+      .filter(
+        (r) =>
+          !s ||
+          [r.brand, r.color, r.size, r.variantId, r.productName]
+            .map((x) => (x || "").toLowerCase())
+            .some((x) => x.includes(s))
+      );
+  }, [phSkus, house, search]);
+
+  const countByHouse = useMemo(() => {
+    const m = new Map<string, number>();
+    phSkus.forEach((r) =>
+      m.set(r.printHouse, (m.get(r.printHouse) || 0) + 1)
+    );
+    return m;
+  }, [phSkus]);
+
+  const paged = rows.slice((page - 1) * pageSize, page * pageSize);
+  const pageIds = paged.map((r) => r.id);
+  const allPageSelected =
+    pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
+
+  useEffect(() => {
+    setPage(1);
+    setSelectedIds([]);
+  }, [house, search]);
+
+  const handleImport = async (file: File) => {
+    if (!house) return message.warning("Chọn nhà in trước khi import");
+    const csvRows = parseCSV(await file.text());
+    if (!csvRows.length) return message.error("File CSV trống");
+    if (!("Brand" in csvRows[0]) || !("Variant ID" in csvRows[0]))
+      return message.error(
+        'Thiếu cột "Brand" hoặc "Variant ID" — sai định dạng file SK2'
+      );
+    const byKey = new Map(
+      phSkus
+        .filter((r) => r.printHouse === house)
+        .map((r) => [skuKeyOf(house, r.brand, r.color, r.size), r.id])
+    );
+    const now = new Date().toISOString();
+    const seen = new Set<string>();
+    const upserts: any[] = [];
+    for (const r of csvRows) {
+      const brand = (r["Brand"] || "").trim();
+      const variantId = (r["Variant ID"] || "").trim();
+      if (!brand || !variantId) continue;
+      const color = (r["Color"] || "").trim();
+      const size = (r["Size"] || "").trim();
+      const k = skuKeyOf(house, brand, color, size);
+      if (seen.has(k)) continue; // trùng trong file → lấy dòng đầu
+      seen.add(k);
+      upserts.push({
+        id: byKey.get(k) || genId(),
+        printHouse: house,
+        productName: (r["Product name"] || "").trim(),
+        style: (r["Style"] || "").trim(),
+        brand,
+        color,
+        size,
+        variantId,
+        created: now,
+      });
+    }
+    if (!upserts.length) return message.error("Không có dòng hợp lệ");
+    const CHUNK = 400;
+    setImporting({ done: 0, total: upserts.length });
+    try {
+      for (let i = 0; i < upserts.length; i += CHUNK) {
+        await sbUpsert("printHouseSkus", upserts.slice(i, i + CHUNK));
+        setImporting({
+          done: Math.min(i + CHUNK, upserts.length),
+          total: upserts.length,
+        });
+      }
+      qc.invalidateQueries(["adm-ph-skus"]);
+      message.success(
+        `Đã import ${upserts.length} SKU cho nhà in "${house}"`
+      );
+    } finally {
+      setImporting(null);
+    }
+  };
+
+  const handleExport = () => {
+    if (!rows.length) return message.warning("Không có dòng để xuất");
+    downloadCSV(
+      `sku-${house}.csv`,
+      toCSV(
+        ["Product name", "Style", "Brand", "Color", "Size", "Variant ID"],
+        rows.map((r) => [
+          r.productName || "",
+          r.style || "",
+          r.brand,
+          r.color || "",
+          r.size || "",
+          r.variantId,
+        ])
+      )
+    );
+  };
+
+  const handleBulkDelete = async () => {
+    await removeMany.mutateAsync(selectedIds as any);
+    message.success(`Đã xóa ${selectedIds.length} dòng`);
+    setSelectedIds([]);
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-4 mt-4 bg-white">
+      <div className="font-semibold text-gray-800 text-[14px]">
+        Data SKU theo Nhà In
+      </div>
+      <p className="text-gray-400 text-xs mt-0.5 mb-3">
+        Mỗi nhà in quản lý bộ mã riêng. Chọn nhà in rồi Import file SK2 (cột
+        Product name, Style, Brand, Color, Size, Variant ID). Brand = tên sản
+        phẩm. Dùng để tra Variant ID theo Brand + Màu + Size.
+      </p>
+
+      <div className="flex items-end gap-3 flex-wrap">
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            NHÀ IN
+          </div>
+          <Select
+            className="w-[220px]"
+            placeholder="Chọn nhà in..."
+            value={house || undefined}
+            onChange={(v) => setHouse(v)}
+            options={printHouses.map((h) => ({
+              value: h.name,
+              label: `${h.name}${
+                countByHouse.get(h.name)
+                  ? ` (${countByHouse.get(h.name)})`
+                  : ""
+              }`,
+            }))}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            TÌM KIẾM
+          </div>
+          <Input
+            className="w-[220px]"
+            placeholder="Brand / màu / size / Variant ID..."
+            allowClear
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <Button
+          icon={<FiUpload />}
+          loading={!!importing}
+          disabled={!house}
+          onClick={() => fileRef.current?.click()}
+        >
+          {importing
+            ? `Đang import ${importing.done}/${importing.total}...`
+            : "Import CSV (SK2)"}
+        </Button>
+        <Button icon={<FiDownload />} onClick={handleExport} disabled={!rows.length}>
+          Export CSV
+        </Button>
+        {selectedIds.length > 0 && (
+          <Popconfirm
+            title={`Xóa ${selectedIds.length} dòng đã chọn?`}
+            okText="Xóa"
+            cancelText="Hủy"
+            okButtonProps={{ danger: true }}
+            onConfirm={handleBulkDelete}
+          >
+            <Button danger icon={<FiTrash2 />}>
+              Xóa đã chọn ({selectedIds.length})
+            </Button>
+          </Popconfirm>
+        )}
+        <span className="ml-auto text-xs bg-gray-100 rounded-full px-3 py-1 text-gray-600 font-medium">
+          {rows.length} SKU
+        </span>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) handleImport(f);
+            e.target.value = "";
+          }}
+        />
+      </div>
+
+      {importing && (
+        <div className="mt-3">
+          <Progress
+            percent={Math.round((importing.done / importing.total) * 100)}
+            status="active"
+            strokeColor="#2563EB"
+          />
+        </div>
+      )}
+
+      <div className="border border-gray-200 rounded-xl overflow-x-auto bg-white mt-3">
+        <table className="w-full text-[13px] border-collapse min-w-[820px]">
+          <thead>
+            <tr className="text-left text-gray-500 bg-gray-50 border-b border-gray-200">
+              <th className="p-2.5 w-9">
+                <Checkbox
+                  checked={allPageSelected}
+                  indeterminate={
+                    !allPageSelected &&
+                    pageIds.some((id) => selectedIds.includes(id))
+                  }
+                  onChange={(e) =>
+                    setSelectedIds((prev) =>
+                      e.target.checked
+                        ? Array.from(new Set([...prev, ...pageIds]))
+                        : prev.filter((id) => !pageIds.includes(id))
+                    )
+                  }
+                />
+              </th>
+              <th className="p-2.5 font-medium">Brand (Sản phẩm)</th>
+              <th className="p-2.5 font-medium">Color</th>
+              <th className="p-2.5 font-medium">Size</th>
+              <th className="p-2.5 font-medium">Variant ID</th>
+              <th className="p-2.5 font-medium">Product name / Style</th>
+              <th className="p-2.5 font-medium w-14"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {paged.map((r) => (
+              <tr
+                key={r.id}
+                className={`border-b border-gray-50 ${
+                  selectedIds.includes(r.id) ? "bg-[#EFF4FF]" : ""
+                }`}
+              >
+                <td className="p-2.5">
+                  <Checkbox
+                    checked={selectedIds.includes(r.id)}
+                    onChange={(e) =>
+                      setSelectedIds((prev) =>
+                        e.target.checked
+                          ? [...prev, r.id]
+                          : prev.filter((x) => x !== r.id)
+                      )
+                    }
+                  />
+                </td>
+                <td className="p-2.5 font-medium text-gray-800">{r.brand}</td>
+                <td className="p-2.5">{r.color || "—"}</td>
+                <td className="p-2.5">{r.size || "—"}</td>
+                <td className="p-2.5 font-mono text-xs text-[#2563EB]">
+                  {r.variantId}
+                </td>
+                <td className="p-2.5 text-xs text-gray-500 max-w-[240px] truncate">
+                  {[r.productName, r.style].filter(Boolean).join(" · ") || "—"}
+                </td>
+                <td className="p-2.5">
+                  <Popconfirm
+                    title="Xóa dòng SKU này?"
+                    okText="Xóa"
+                    cancelText="Hủy"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={async () => {
+                      await removeMany.mutateAsync([r.id] as any);
+                      message.success("Đã xóa dòng");
+                    }}
+                  >
+                    <button className="w-7 h-7 rounded-md border border-red-100 bg-red-50 text-red-500 inline-flex items-center justify-center cursor-pointer hover:bg-red-500 hover:text-white">
+                      <FiTrash2 size={13} />
+                    </button>
+                  </Popconfirm>
+                </td>
+              </tr>
+            ))}
+            {!paged.length && (
+              <tr>
+                <td colSpan={7} className="p-10 text-center text-gray-400">
+                  {!printHouses.length
+                    ? "Chưa có nhà in — thêm nhà in ở mục trên trước"
+                    : "Chưa có SKU cho nhà in này — bấm Import CSV (SK2)"}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {rows.length > 0 && (
+          <div className="flex justify-end p-3 border-t border-gray-100">
+            <Pagination
+              current={page}
+              pageSize={pageSize}
+              total={rows.length}
+              showSizeChanger
+              pageSizeOptions={[50, 100, 200, 500]}
+              showTotal={(t) => `${t} SKU`}
+              onChange={(p, ps) => {
+                setPage(ps !== pageSize ? 1 : p);
+                setPageSize(ps);
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PrintHouse() {
   const { printOrders } = usePrintOrders();
   const { update, removeMany } = usePrintOrderMutations();
@@ -416,6 +769,8 @@ export default function PrintHouse() {
       </p>
 
       <PrintHouseCatalog />
+
+      <PrintHouseSkuManager />
 
       {/* Thanh công cụ */}
       <div className="border border-gray-200 rounded-xl p-4 mt-4 bg-white flex items-end gap-3 flex-wrap">

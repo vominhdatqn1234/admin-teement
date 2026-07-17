@@ -11,6 +11,7 @@ import {
   query,
   updateDoc,
 } from "../lib/db";
+import { sbSelectAll } from "../lib/supabase";
 import {
   BaseProduct,
   DesignRequest,
@@ -20,6 +21,7 @@ import {
   PodPrice,
   PodVariant,
   PrintHouseItem,
+  PrintHouseSku,
   PrintOrder,
   TrackingRow,
   Seller,
@@ -42,6 +44,7 @@ const variantsRef = collection(db, "podVariants");
 const printOrdersRef = collection(db, "printOrders");
 const trackingsRef = collection(db, "trackings");
 const printHousesRef = collection(db, "printHouses");
+const printHouseSkusRef = collection(db, "printHouseSkus");
 
 function toList<T>(snapshot: any): T[] {
   const out: T[] = [];
@@ -166,6 +169,25 @@ export function usePrintHouses() {
 }
 export const usePrintHouseMutations = crud(printHousesRef, "adm-print-houses");
 
+/* ---------- Data SKU riêng theo từng Nhà In (file SK2) ---------- */
+export function usePrintHouseSkus() {
+  // Bảng có thể vài nghìn dòng → phân trang lấy đủ
+  const q = useQuery(["adm-ph-skus"], async () => {
+    const rows = await sbSelectAll("printHouseSkus", {
+      order: [{ column: "brand", ascending: true }],
+    });
+    return rows.map((r) => {
+      const { created_at, ...rest } = r as any;
+      return rest as PrintHouseSku;
+    });
+  });
+  return { ...q, phSkus: (q.data as PrintHouseSku[]) || [] };
+}
+export const usePrintHouseSkuMutations = crud(
+  printHouseSkusRef,
+  "adm-ph-skus"
+);
+
 /* ---------- Tracking vận chuyển ---------- */
 export function useTrackings() {
   const q = useQuery(["adm-trackings"], () =>
@@ -186,10 +208,18 @@ export const usePrintOrderMutations = crud(printOrdersRef, "adm-print-orders");
 
 /* ---------- Biến thể phôi (Sản phẩm × Màu × Size + giá) ---------- */
 export function usePodVariants() {
-  const q = useQuery(["adm-variants"], () =>
-    getDocs(query(variantsRef, orderBy("product", "asc")))
-  );
-  return { ...q, variants: toList<PodVariant>(q.data) };
+  // Bảng rất lớn (hàng nghìn dòng) — phân trang để lấy ĐỦ mọi sản phẩm,
+  // tránh bị PostgREST cắt còn ~1000 dòng khiến thiếu phôi.
+  const q = useQuery(["adm-variants"], async () => {
+    const rows = await sbSelectAll("podVariants", {
+      order: [{ column: "product", ascending: true }],
+    });
+    return rows.map((r) => {
+      const { created_at, ...rest } = r as any;
+      return rest as PodVariant;
+    });
+  });
+  return { ...q, variants: (q.data as PodVariant[]) || [] };
 }
 export const usePodVariantMutations = crud(variantsRef, "adm-variants");
 

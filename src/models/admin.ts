@@ -28,6 +28,8 @@ export interface OrderItem {
   sku?: string;
   color?: string;
   size?: string;
+  /** Vùng in: "" = Mặc định, "special" = Vùng in đặc biệt 16*21 (+$2/sp) */
+  printArea?: string;
   personalization?: string;
   quantity: number;
   price: number;
@@ -160,6 +162,22 @@ export interface PrintHouseItem {
   created?: string;
 }
 
+/**
+ * Data SKU riêng của từng Nhà In (import từ file SK2).
+ * Key tra cứu: printHouse + brand (=tên sản phẩm) + color + size → variantId.
+ */
+export interface PrintHouseSku {
+  id: string;
+  printHouse: string; // tên nhà in sở hữu data này
+  productName?: string;
+  style?: string;
+  brand: string; // tương ứng tên sản phẩm
+  color?: string;
+  size?: string;
+  variantId: string;
+  created?: string;
+}
+
 /** Tracking vận chuyển: Order ID -> mã tracking + nhà vận chuyển */
 export interface TrackingRow {
   id: string;
@@ -235,6 +253,7 @@ export const ORDER_STATUS: Record<string, { label: string; color: string; bg: st
   cancelled: { label: "Đã hủy", color: "#B91C1C", bg: "#FDECEC" },
   support: { label: "Yêu cầu Hỗ trợ", color: "#C2410C", bg: "#FFF1E7" },
   reship: { label: "Đơn Reship", color: "#4338CA", bg: "#EEF0FF" },
+  refund: { label: "Hoàn tiền", color: "#BE123C", bg: "#FFE4E6" },
 };
 
 /** Trạng thái được tính là đơn thành công (đã thanh toán trở đi) */

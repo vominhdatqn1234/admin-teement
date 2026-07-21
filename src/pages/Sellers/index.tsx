@@ -89,6 +89,17 @@ export default function Sellers() {
   const [statusTab, setStatusTab] = useState("all");
   const [filterSeller, setFilterSeller] = useState<string>("");
   const [filterShop, setFilterShop] = useState<string>("");
+  const [trackingFilter, setTrackingFilter] = useState<
+    "all" | "missing" | "available"
+  >("all");
+  const [printHouseFilter, setPrintHouseFilter] = useState("");
+  const [productFilter, setProductFilter] = useState("");
+  const [designFilter, setDesignFilter] = useState<
+    "all" | "missing" | "ready"
+  >("all");
+  const [shipByFilter, setShipByFilter] = useState<
+    "all" | "overdue" | "today" | "next_2_days" | "missing"
+  >("all");
   const [searchCode, setSearchCode] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -110,6 +121,19 @@ export default function Sellers() {
   const PAGE_SIZE = 50;
 
   const realSellers = sellers.filter((s) => s.permission !== "Admin");
+  const fulfilProducts = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          orders.flatMap((order) =>
+            (order.items || [])
+              .map((item) => item.productSku?.trim())
+              .filter(Boolean) as string[]
+          )
+        )
+      ).sort((a, b) => a.localeCompare(b)),
+    [orders]
+  );
 
   // 3 loại phí của seller sở hữu đơn — nhập 1 lần cho seller là tự áp cho
   // tất cả đơn thuộc mọi shop của seller đó (kể cả đơn đang chờ duyệt).
@@ -132,6 +156,42 @@ export default function Sellers() {
       if (statusTab !== "all" && o.status !== statusTab) return false;
       if (filterSeller && o.userId !== filterSeller) return false;
       if (filterShop && o.storeId !== filterShop) return false;
+      const hasTracking = Boolean(String(o.tracking || "").trim());
+      if (trackingFilter === "missing" && hasTracking) return false;
+      if (trackingFilter === "available" && !hasTracking) return false;
+      const hasPrintHouse = Boolean(String(o.printHouse || "").trim());
+      if (printHouseFilter === "__unassigned__" && hasPrintHouse) return false;
+      if (
+        printHouseFilter &&
+        printHouseFilter !== "__unassigned__" &&
+        o.printHouse !== printHouseFilter
+      )
+        return false;
+      if (
+        productFilter &&
+        !(o.items || []).some((item) => item.productSku === productFilter)
+      )
+        return false;
+      const hasMissingDesign = (o.items || []).some(
+        (item) => !String(item.frontUrl || "").trim()
+      );
+      if (designFilter === "missing" && !hasMissingDesign) return false;
+      if (designFilter === "ready" && hasMissingDesign) return false;
+      const shipBy = o.shipBy ? dayjs(o.shipBy).startOf("day") : null;
+      const hasShipBy = Boolean(shipBy?.isValid());
+      const today = dayjs().startOf("day");
+      if (shipByFilter === "missing" && hasShipBy) return false;
+      if (shipByFilter === "overdue" && (!hasShipBy || !shipBy!.isBefore(today)))
+        return false;
+      if (shipByFilter === "today" && (!hasShipBy || !shipBy!.isSame(today, "day")))
+        return false;
+      if (
+        shipByFilter === "next_2_days" &&
+        (!hasShipBy ||
+          shipBy!.isBefore(today.add(1, "day")) ||
+          shipBy!.isAfter(today.add(2, "day")))
+      )
+        return false;
       if (
         searchCode &&
         !o.orderCode?.toLowerCase().includes(searchCode.toLowerCase())
@@ -143,7 +203,20 @@ export default function Sellers() {
         return false;
       return true;
     });
-  }, [orders, statusTab, filterSeller, filterShop, searchCode, fromDate, toDate]);
+  }, [
+    orders,
+    statusTab,
+    filterSeller,
+    filterShop,
+    trackingFilter,
+    printHouseFilter,
+    productFilter,
+    designFilter,
+    shipByFilter,
+    searchCode,
+    fromDate,
+    toDate,
+  ]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -649,6 +722,124 @@ export default function Sellers() {
         </div>
         <div>
           <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            TRACKING
+          </div>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden bg-white">
+            {[
+              { key: "all", label: "Tất cả" },
+              { key: "missing", label: "Chưa có tracking" },
+              { key: "available", label: "Đã có tracking" },
+            ].map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => {
+                  setTrackingFilter(item.key as typeof trackingFilter);
+                  setPage(1);
+                }}
+                className={`px-3 h-[32px] text-xs border-0 border-r last:border-r-0 border-gray-200 cursor-pointer whitespace-nowrap ${
+                  trackingFilter === item.key
+                    ? "bg-[#171826] text-white font-semibold"
+                    : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            NHÀ IN
+          </div>
+          <Select
+            className="w-[170px]"
+            value={printHouseFilter || undefined}
+            placeholder="Tất cả nhà in"
+            allowClear
+            onChange={(v) => {
+              setPrintHouseFilter(v || "");
+              setPage(1);
+            }}
+            options={[
+              { value: "__unassigned__", label: "Chưa gán nhà in" },
+              ...printHouseOptions.map((house) => ({
+                value: house.value,
+                label: house.value,
+              })),
+            ]}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            PHÔI FULFILL
+          </div>
+          <Select
+            className="w-[170px]"
+            value={productFilter || undefined}
+            placeholder="Tất cả loại phôi"
+            allowClear
+            showSearch
+            onChange={(v) => {
+              setProductFilter(v || "");
+              setPage(1);
+            }}
+            options={fulfilProducts.map((product) => ({
+              value: product,
+              label: product,
+            }))}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            THIẾT KẾ
+          </div>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden bg-white">
+            {[
+              { key: "all", label: "Tất cả" },
+              { key: "missing", label: "Thiếu Front" },
+              { key: "ready", label: "Đủ Front" },
+            ].map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => {
+                  setDesignFilter(item.key as typeof designFilter);
+                  setPage(1);
+                }}
+                className={`px-3 h-[32px] text-xs border-0 border-r last:border-r-0 border-gray-200 cursor-pointer whitespace-nowrap ${
+                  designFilter === item.key
+                    ? "bg-[#171826] text-white font-semibold"
+                    : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            HẠN SHIP ETSY
+          </div>
+          <Select
+            className="w-[165px]"
+            value={shipByFilter}
+            onChange={(v) => {
+              setShipByFilter(v);
+              setPage(1);
+            }}
+            options={[
+              { value: "all", label: "Tất cả hạn ship" },
+              { value: "overdue", label: "Đã quá hạn" },
+              { value: "today", label: "Đến hạn hôm nay" },
+              { value: "next_2_days", label: "Trong 1–2 ngày tới" },
+              { value: "missing", label: "Chưa có hạn ship" },
+            ]}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
             KHOẢNG NGÀY
           </div>
           <DatePicker.RangePicker
@@ -670,6 +861,11 @@ export default function Sellers() {
           onClick={() => {
             setFilterSeller("");
             setFilterShop("");
+            setTrackingFilter("all");
+            setPrintHouseFilter("");
+            setProductFilter("");
+            setDesignFilter("all");
+            setShipByFilter("all");
             setSearchCode("");
             setFromDate("");
             setToDate("");

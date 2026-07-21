@@ -59,6 +59,8 @@ export interface PodOrder {
   note?: string;
   total: number;
   created: string;
+  /** Hạn giao Etsy (Scheduled to ship by) */
+  shipBy?: string | null;
   datePaid?: string | null;
   dateShipped?: string | null;
   /** Trạng thái trước khi gửi Yêu cầu Hỗ trợ */
@@ -76,6 +78,10 @@ export interface LedgerEntry {
   orderCount?: number;
   amount: number;
   note?: string;
+  /** top_up do seller gửi; legacy entry không có type là khoản admin gạch nợ */
+  type?: "top_up" | "manual_payment";
+  /** Legacy entry không có status được coi là đã duyệt */
+  status?: "pending" | "approved" | "rejected";
   created?: string;
 }
 

@@ -46,7 +46,13 @@ import {
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
 import { sbUpsert } from "../../lib/supabase";
 import { useQueryClient } from "react-query";
-import { ORDER_STATUS, OrderItem, PodOrder, Seller } from "../../models/admin";
+import {
+  ORDER_STATUS,
+  OrderItem,
+  PodOrder,
+  Seller,
+  splitSizeFromColor,
+} from "../../models/admin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { toDirectImageUrl } from "../../lib/imageUrl";
 
@@ -1232,8 +1238,12 @@ export default function Sellers() {
                             // productSku (KHÔNG dùng productName vì đó là tên
                             // listing dài, không phải Type)
                             const oType = it.origType ?? it.productSku ?? "";
-                            const oColor = it.origColor ?? it.color ?? "";
-                            const oSize = it.origSize ?? it.size ?? "";
+                            // Tách size bị dính trong color (vd "Gildan 2XL")
+                            const { color: oColor, size: oSize } =
+                              splitSizeFromColor(
+                                it.origColor ?? it.color,
+                                it.origSize ?? it.size
+                              );
                             const orig =
                               [
                                 oType && `Type: ${oType}`,

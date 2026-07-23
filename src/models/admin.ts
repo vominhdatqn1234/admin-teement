@@ -26,6 +26,31 @@ export interface Store {
   discountAmount?: number; // Mức chiết khấu ($)
 }
 
+/** Mã size thường gặp — để tách size bị dính trong color (vd "Gildan 2XL") */
+export const KNOWN_SIZES = [
+  "XS", "S", "M", "L", "XL", "XXL", "XXXL",
+  "2XL", "3XL", "4XL", "5XL", "6XL",
+  "2X", "3X", "4X", "5X",
+];
+
+/** Tách size khỏi color khi ô size trống mà color kết thúc bằng 1 mã size. */
+export function splitSizeFromColor(
+  color?: string,
+  size?: string
+): { color: string; size: string } {
+  let c = (color || "").trim();
+  let s = (size || "").trim();
+  if (!s && c) {
+    const toks = c.split(/\s+/);
+    const last = (toks[toks.length - 1] || "").toUpperCase();
+    if (toks.length > 1 && KNOWN_SIZES.includes(last)) {
+      s = toks.pop() as string;
+      c = toks.join(" ");
+    }
+  }
+  return { color: c, size: s };
+}
+
 export interface OrderItem {
   productName?: string;
   productSku?: string;

@@ -46,7 +46,7 @@ import {
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
 import { sbUpsert } from "../../lib/supabase";
 import { useQueryClient } from "react-query";
-import { ORDER_STATUS, PodOrder, Seller } from "../../models/admin";
+import { ORDER_STATUS, OrderItem, PodOrder, Seller } from "../../models/admin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { toDirectImageUrl } from "../../lib/imageUrl";
 
@@ -281,10 +281,50 @@ export default function Sellers() {
   };
 
   const exportOrders = (list: PodOrder[], filename: string) => {
+    // Gộp thông tin từng item của đơn vào 1 ô, ngăn cách bằng " | "
+    const joinItems = (o: PodOrder, pick: (it: OrderItem) => string) =>
+      (o.items || []).map(pick).join(" | ");
+
     downloadCSV(
       filename,
       toCSV(
-        ["Order ID", "Status", "Shop", "Customer", "Date", "Paid", "Tracking", "Print Area", "Price", "Markup", "Order Fee", "Discount", "Total"],
+        [
+          // Mã & trạng thái
+          "Order ID",
+          "Status",
+          "Shop",
+          "Nhà In",
+          // Thông tin khách hàng
+          "Customer",
+          "Email",
+          "Phone",
+          "Address",
+          "City",
+          "State",
+          "Zip",
+          "Country",
+          // Sản phẩm khách chọn
+          "Sản phẩm",
+          "SKU",
+          "Màu",
+          "Size",
+          "Số lượng",
+          "Personalization",
+          "Print Area",
+          // Thiết kế của khách
+          "Thiết kế (Front)",
+          "Thiết kế (Back)",
+          "Mockup",
+          // Thời gian & tài chính
+          "Date",
+          "Paid",
+          "Tracking",
+          "Price",
+          "Markup",
+          "Order Fee",
+          "Discount",
+          "Total",
+        ],
         list.map((o) => {
           const f = feesOf(o.userId);
           const printArea = (o.items || []).some(
@@ -292,15 +332,37 @@ export default function Sellers() {
           )
             ? "Vùng in đặc biệt"
             : "Mặc định";
+          const address = [o.address1, o.address2].filter(Boolean).join(", ");
           return [
             o.orderCode,
             ORDER_STATUS[o.status]?.label || o.status,
             o.storeName || "",
+            o.printHouse || "",
+            // Khách hàng
             o.customerName || "",
+            o.customerEmail || "",
+            o.customerPhone || "",
+            address,
+            o.city || "",
+            o.state || "",
+            o.zip || "",
+            o.country || "",
+            // Sản phẩm
+            joinItems(o, (it) => `${it.quantity}x ${it.productName || it.productSku || ""}`),
+            joinItems(o, (it) => it.sku || it.productSku || ""),
+            joinItems(o, (it) => it.color || ""),
+            joinItems(o, (it) => it.size || ""),
+            joinItems(o, (it) => String(it.quantity ?? "")),
+            joinItems(o, (it) => it.personalization || ""),
+            printArea,
+            // Thiết kế
+            joinItems(o, (it) => it.frontUrl || ""),
+            joinItems(o, (it) => it.backUrl || ""),
+            joinItems(o, (it) => it.mockupUrl || ""),
+            // Thời gian & tài chính
             dayjs(o.created).format("DD/MM/YYYY"),
             o.datePaid ? dayjs(o.datePaid).format("DD/MM/YYYY") : "Chưa thanh toán",
             o.tracking || "",
-            printArea,
             (o.total || 0).toFixed(2),
             f.markup.toFixed(2),
             f.perOrderFee.toFixed(2),

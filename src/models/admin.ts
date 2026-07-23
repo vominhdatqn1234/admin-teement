@@ -20,6 +20,10 @@ export interface Store {
   taxCode?: string;
   userId?: string;
   created?: string;
+  /** Phí do admin nhập cho từng shop (hiển thị trên Overview seller theo shop) */
+  designSupportFee?: number; // Hỗ trợ design ($)
+  mgmtFee?: number; // Chi phí quản lý ($)
+  discountAmount?: number; // Mức chiết khấu ($)
 }
 
 export interface OrderItem {
@@ -50,7 +54,10 @@ export interface PodOrder {
   source?: string;
   userId?: string;
   customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
   address1?: string;
+  address2?: string;
   city?: string;
   state?: string;
   zip?: string;
@@ -78,10 +85,6 @@ export interface LedgerEntry {
   orderCount?: number;
   amount: number;
   note?: string;
-  /** top_up do seller gửi; legacy entry không có type là khoản admin gạch nợ */
-  type?: "top_up" | "manual_payment";
-  /** Legacy entry không có status được coi là đã duyệt */
-  status?: "pending" | "approved" | "rejected";
   created?: string;
 }
 

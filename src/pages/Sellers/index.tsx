@@ -1228,8 +1228,10 @@ export default function Sellers() {
                       <td className="p-3">
                         <div className="space-y-1.5">
                           {(o.items || []).map((it, i) => {
-                            // Bản GỐC khách up: ưu tiên field orig; fallback field cũ
-                            const oType = it.origType ?? it.productName ?? "";
+                            // Bản GỐC khách up: ưu tiên field orig; fallback về
+                            // productSku (KHÔNG dùng productName vì đó là tên
+                            // listing dài, không phải Type)
+                            const oType = it.origType ?? it.productSku ?? "";
                             const oColor = it.origColor ?? it.color ?? "";
                             const oSize = it.origSize ?? it.size ?? "";
                             const orig =
@@ -1237,8 +1239,6 @@ export default function Sellers() {
                                 oType && `Type: ${oType}`,
                                 oColor && `Color: ${oColor}`,
                                 oSize && `Size: ${oSize}`,
-                                it.personalization &&
-                                  `Personalization: ${it.personalization}`,
                               ]
                                 .filter(Boolean)
                                 .join(" · ") || "—";

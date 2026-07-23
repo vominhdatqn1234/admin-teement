@@ -1228,25 +1228,26 @@ export default function Sellers() {
                       <td className="p-3">
                         <div className="space-y-1.5">
                           {(o.items || []).map((it, i) => {
-                            const orig = [
-                              `Type:${[it.productName, it.size]
+                            // Bản GỐC khách up: ưu tiên field orig; fallback field cũ
+                            const oType = it.origType ?? it.productName ?? "";
+                            const oColor = it.origColor ?? it.color ?? "";
+                            const oSize = it.origSize ?? it.size ?? "";
+                            const orig =
+                              [
+                                oType && `Type: ${oType}`,
+                                oColor && `Color: ${oColor}`,
+                                oSize && `Size: ${oSize}`,
+                                it.personalization &&
+                                  `Personalization: ${it.personalization}`,
+                              ]
                                 .filter(Boolean)
-                                .join(" ") || "—"}`,
-                              it.color ? `Color:${it.color}` : "",
-                              it.personalization
-                                ? `Personalization:${it.personalization}`
-                                : "",
-                            ]
-                              .filter(Boolean)
-                              .join(",");
+                                .join(" · ") || "—";
                             return (
-                              <div
-                                key={i}
-                                title={orig}
-                                className="bg-amber-50 border border-amber-200 text-amber-700 text-[12px] font-medium rounded-lg px-3 py-1.5 max-w-[260px] truncate"
-                              >
-                                {orig}
-                              </div>
+                              <Tooltip key={i} title={orig} placement="top">
+                                <div className="bg-amber-50 border border-amber-200 text-amber-700 text-[12px] font-medium rounded-lg px-3 py-1.5 max-w-[260px] truncate cursor-help">
+                                  {orig}
+                                </div>
+                              </Tooltip>
                             );
                           })}
                           {!o.items?.length && (

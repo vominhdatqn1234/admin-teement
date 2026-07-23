@@ -32,6 +32,11 @@ export interface OrderItem {
   sku?: string;
   color?: string;
   size?: string;
+  /** Bản GỐC khách up lên (Etsy) — giữ nguyên, không đổi khi seller chọn phôi */
+  origTitle?: string;
+  origType?: string;
+  origColor?: string;
+  origSize?: string;
   /** Vùng in: "" = Mặc định, "special" = Vùng in đặc biệt 16*21 (+$2/sp) */
   printArea?: string;
   personalization?: string;

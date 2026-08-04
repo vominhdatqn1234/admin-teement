@@ -9,12 +9,15 @@ import {
   getDocs,
   orderBy,
   query,
+  setDoc,
   updateDoc,
+  where,
 } from "../lib/db";
 import { sbSelectAll } from "../lib/supabase";
 import {
   BaseProduct,
   DesignRequest,
+  ImportBatch,
   LedgerEntry,
   PodColor,
   PodOrder,
@@ -45,6 +48,7 @@ const printOrdersRef = collection(db, "printOrders");
 const trackingsRef = collection(db, "trackings");
 const printHousesRef = collection(db, "printHouses");
 const printHouseSkusRef = collection(db, "printHouseSkus");
+const importQueueRef = collection(db, "podImportQueue");
 
 function toList<T>(snapshot: any): T[] {
   const out: T[] = [];
@@ -96,6 +100,59 @@ export function useSellers() {
 }
 export const useSellerMutations = crud(sellersRef, "adm-sellers");
 
+/**
+ * Xóa seller kèm cascade: xoá TẤT CẢ đơn (podOrders) và các lô import PDF
+ * chờ duyệt (podImportQueue) của seller đó, rồi mới xoá bản ghi seller.
+ */
+export function useSellerCascade() {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries(["adm-sellers"]);
+    qc.invalidateQueries(["adm-orders"]);
+    qc.invalidateQueries(["adm-import-queue"]);
+  };
+
+  const removeSeller = useMutation(
+    async ({
+      id,
+      onProgress,
+    }: {
+      id: string;
+      onProgress?: (done: number, total: number) => void;
+    }) => {
+      // 1) Toàn bộ đơn của seller
+      const ordersSnap = await getDocs(
+        query(ordersRef, where("userId", "==", id))
+      );
+      const orderIds = toList<PodOrder>(ordersSnap).map((o) => o.id);
+      // 2) Các lô import PDF chờ duyệt của seller
+      const queueSnap = await getDocs(
+        query(importQueueRef, where("userId", "==", id))
+      );
+      const queueIds = toList<ImportBatch>(queueSnap).map((q) => q.id);
+
+      const total = orderIds.length + queueIds.length + 1;
+      let done = 0;
+      for (const oid of orderIds) {
+        await deleteDoc(doc(ordersRef, oid));
+        onProgress?.(++done, total);
+      }
+      for (const qid of queueIds) {
+        await deleteDoc(doc(importQueueRef, qid));
+        onProgress?.(++done, total);
+      }
+      // 3) Xoá seller sau cùng -> lần guard kế tiếp bên client sẽ đá user ra
+      await deleteDoc(doc(sellersRef, id));
+      onProgress?.(++done, total);
+
+      return { orders: orderIds.length, queue: queueIds.length };
+    },
+    { onSuccess: invalidate }
+  );
+
+  return { removeSeller };
+}
+
 /* ---------- Stores ---------- */
 export function useStores() {
   const q = useQuery(["adm-stores"], () => getDocs(storesRef));
@@ -106,11 +163,98 @@ export const useStoreMutations = crud(storesRef, "adm-stores");
 /* ---------- Orders (toàn hệ thống) ---------- */
 export function useOrders() {
   const q = useQuery(["adm-orders"], () =>
-    getDocs(query(ordersRef, orderBy("created", "desc")))
+    // Thêm khóa phụ "id" để thứ tự ỔN ĐỊNH — nhiều đơn cùng ngày `created`
+    // nếu chỉ sort theo created sẽ bị đảo chỗ mỗi lần refetch (row nhảy sau
+    // khi lưu). Sort thêm theo id đảm bảo mỗi lần trả về đúng một thứ tự.
+    getDocs(
+      query(ordersRef, orderBy("created", "desc"), orderBy("id", "asc"))
+    )
   );
   return { ...q, orders: toList<PodOrder>(q.data) };
 }
 export const useOrderMutations = crud(ordersRef, "adm-orders");
+
+/* ---------- Hàng đợi import PDF (seller gửi, chờ admin duyệt) ---------- */
+export function useImportQueue() {
+  const q = useQuery(["adm-import-queue"], () =>
+    getDocs(query(importQueueRef, orderBy("created", "desc")))
+  );
+  return { ...q, batches: toList<ImportBatch>(q.data) };
+}
+
+export function useImportQueueMutations() {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries(["adm-import-queue"]);
+    qc.invalidateQueries(["adm-orders"]);
+  };
+
+  /**
+   * Duyệt cả lô: ghi từng đơn sang "podOrders" (giữ userId của seller),
+   * rồi đánh dấu lô "approved". Dùng id đơn có sẵn (etsy-...) để idempotent.
+   */
+  const approve = useMutation(
+    async ({
+      batch,
+      reviewedBy,
+      onProgress,
+    }: {
+      batch: ImportBatch;
+      reviewedBy?: string;
+      onProgress?: (done: number, total: number) => void;
+    }) => {
+      const list = batch.orders || [];
+      let done = 0;
+      for (const row of list) {
+        const data = { ...row.data, userId: batch.userId || "" };
+        if (row.id) await setDoc(doc(ordersRef, row.id), data);
+        else await addDoc(ordersRef, data);
+        done += 1;
+        onProgress?.(done, list.length);
+      }
+      await updateDoc(doc(importQueueRef, batch.id), {
+        status: "approved",
+        reviewedBy: reviewedBy || "admin",
+        reviewedAt: new Date().toISOString(),
+      });
+    },
+    { onSuccess: invalidate }
+  );
+
+  /** Từ chối cả lô: không ghi đơn nào, chỉ lưu lý do. */
+  const reject = useMutation(
+    ({
+      id,
+      reason,
+      reviewedBy,
+    }: {
+      id: string;
+      reason?: string;
+      reviewedBy?: string;
+    }) =>
+      updateDoc(doc(importQueueRef, id), {
+        status: "rejected",
+        rejectedReason: reason || "",
+        reviewedBy: reviewedBy || "admin",
+        reviewedAt: new Date().toISOString(),
+      }),
+    { onSuccess: invalidate }
+  );
+
+  const remove = useMutation(
+    (id: string) => deleteDoc(doc(importQueueRef, id)),
+    { onSuccess: invalidate }
+  );
+
+  const removeMany = useMutation(
+    async (ids: string[]) => {
+      for (const id of ids) await deleteDoc(doc(importQueueRef, id));
+    },
+    { onSuccess: invalidate }
+  );
+
+  return { approve, reject, remove, removeMany };
+}
 
 /* ---------- Ledger (sổ cái gạch nợ) ---------- */
 export function useLedger() {

@@ -1,4 +1,4 @@
-import { ConfigProvider, } from "antd";
+import { ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "react-query";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AdminLayout from "./components/AdminLayout";
@@ -6,6 +6,7 @@ import Blanks from "./pages/Blanks";
 import Colors from "./pages/Colors";
 import DesignOrders from "./pages/DesignOrders";
 import Finance from "./pages/Finance";
+import ImportQueue from "./pages/ImportQueue";
 import Login from "./pages/Login";
 import PodPrices from "./pages/PodPrices";
 import PrintHouse from "./pages/PrintHouse";
@@ -26,6 +27,7 @@ export default function App() {
             <Route index element={<Navigate to="/app/finance" />} />
             <Route path="finance" element={<Finance />} />
             <Route path="sellers" element={<Sellers />} />
+            <Route path="import-queue" element={<ImportQueue />} />
             <Route path="services" element={<Services />} />
             <Route path="blanks" element={<Blanks />} />
             <Route path="colors" element={<Colors />} />

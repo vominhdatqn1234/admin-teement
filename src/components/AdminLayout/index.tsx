@@ -14,6 +14,7 @@ import {
   FiSettings,
   FiSearch,
   FiSidebar,
+  FiInbox,
 } from "react-icons/fi";
 import { NavLink, Navigate, Outlet } from "react-router-dom";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
@@ -21,6 +22,7 @@ import { useAdminAuth } from "../../hooks/useAdminAuth";
 const EXTENSIONS = [
   { to: "/app/finance", label: "Tài chính & Công nợ", icon: <FiDollarSign /> },
   { to: "/app/sellers", label: "Quản lý Seller", icon: <FiUsers /> },
+  { to: "/app/import-queue", label: "Hàng đợi import PDF", icon: <FiInbox /> },
   { to: "/app/services", label: "Dịch vụ mở rộng", icon: <FiFileText /> },
   { to: "/app/blanks", label: "Kho Phôi POD", icon: <FiBox /> },
   { to: "/app/colors", label: "Mã màu phôi", icon: <FiDroplet /> },

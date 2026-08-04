@@ -6,6 +6,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Pagination,
   Popconfirm,
   Popover,
   Select,
@@ -24,6 +25,8 @@ import {
   FiMaximize2,
   FiMinimize2,
   FiRefreshCw,
+  FiUsers,
+  FiChevronLeft,
   FiRotateCcw,
   FiTrash2,
   FiTruck,
@@ -38,6 +41,7 @@ import {
   usePodVariants,
   usePrintHouses,
   usePrintHouseSkus,
+  useSellerCascade,
   useSellerMutations,
   useSellers,
   useStoreMutations,
@@ -88,6 +92,7 @@ export default function Sellers() {
     return db?.hex || DEFAULT_COLOR_HEX[k] || undefined;
   };
   const sellerMut = useSellerMutations();
+  const { removeSeller } = useSellerCascade();
   const storeMut = useStoreMutations();
   const orderMut = useOrderMutations();
   const qc = useQueryClient();
@@ -110,8 +115,13 @@ export default function Sellers() {
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [tableFull, setTableFull] = useState(false);
+  const [sellerPanelOpen, setSellerPanelOpen] = useState(true);
+  const [profitFilter, setProfitFilter] = useState<"all" | "profit" | "loss">(
+    "all"
+  );
   const [detail, setDetail] = useState<PodOrder | null>(null);
   const [sellerDetail, setSellerDetail] = useState<Seller | null>(null);
   const [sellerEdit, setSellerEdit] = useState<Seller | null>(null);
@@ -124,7 +134,6 @@ export default function Sellers() {
     discount: 0,
   });
   const trackingRef = useRef<HTMLInputElement>(null);
-  const PAGE_SIZE = 50;
 
   const realSellers = sellers.filter((s) => s.permission !== "Admin");
   const fulfilProducts = useMemo(
@@ -224,8 +233,104 @@ export default function Sellers() {
     toDate,
   ]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // ---- Bảng giá phôi + tính Lợi nhuận (Đơn giá − Giá nhà in) ----
+  const { variants } = usePodVariants();
+  const findVar = (it: any) => {
+    const nrm = (x?: string) => (x || "").trim().toLowerCase();
+    const brandCands = [it.productName, blankName(it.productSku), it.productSku]
+      .map(nrm)
+      .filter(Boolean);
+    const pool = variants.filter((v) => brandCands.includes(nrm(v.product)));
+    if (!pool.length) return undefined;
+    const size = nrm(it.size);
+    const bySize = size ? pool.filter((v) => nrm(v.size) === size) : pool;
+    const p2 = bySize.length ? bySize : pool;
+    const color = nrm(it.color);
+    return p2.find((v) => nrm(v.color) === color) || p2[0];
+  };
+  // Đơn giá 1 sp theo bảng giá phôi (giá gốc + ship, + vùng in phụ nếu có)
+  const itemUnitPrice = (v: any, it: any) => {
+    const twoSide = !!((it.backUrl || "").trim() || (it.mockupUrl || "").trim());
+    const special =
+      it.printArea === "special" || (it.extraAreas?.length || 0) > 0;
+    const extra = special ? v.printExtraArea || 0 : 0;
+    const base = twoSide
+      ? (v.price || 0) + (v.shipPrice || 0) + (v.printOneSide || 0)
+      : v.priceTeement || 0;
+    return base + extra;
+  };
+  // Giá nhà in 1 sp theo nhà in ĐANG GÁN cho đơn (AK2 / Fashship / 3D).
+  const houseUnitPrice = (o: PodOrder, v: any) => {
+    const name = (o.printHouse || "").toLowerCase();
+    if (name.includes("ak2")) return v.priceAK2 || 0;
+    if (name.includes("fash") || name.includes("flash"))
+      return v.priceFashship || 0;
+    if (name.includes("3d")) return v.price3D || 0;
+    const arr = [v.priceAK2 || 0, v.priceFashship || 0, v.price3D || 0].filter(
+      (x) => x > 0
+    );
+    return arr.length === 1 ? arr[0] : Math.max(0, ...arr);
+  };
+  // Lợi nhuận đơn = tổng (Đơn giá − Giá nhà in) cho các sp đã có giá nhà in.
+  const orderProfit = (o: PodOrder) => {
+    let dono = 0;
+    let house = 0;
+    let hasHouse = false;
+    for (const it of (o.items || []) as any[]) {
+      const v = findVar(it);
+      if (!v) continue;
+      const hu = houseUnitPrice(o, v);
+      if (hu > 0) {
+        const qty = it.quantity || 1;
+        hasHouse = true;
+        house += hu * qty;
+        dono += itemUnitPrice(v, it) * qty;
+      }
+    }
+    return {
+      hasHouse: hasHouse && !!o.printHouse,
+      house,
+      dono,
+      profit: dono - house,
+    };
+  };
+
+  // Thống kê lãi/lỗ trên tập đơn đang lọc
+  const profitStats = useMemo(() => {
+    let withHouse = 0;
+    let lai = 0;
+    let lo = 0;
+    let totalLai = 0;
+    let totalLo = 0;
+    for (const o of filtered) {
+      const p = orderProfit(o);
+      if (!p.hasHouse) continue;
+      withHouse += 1;
+      if (p.profit >= 0) {
+        lai += 1;
+        totalLai += p.profit;
+      } else {
+        lo += 1;
+        totalLo += -p.profit;
+      }
+    }
+    return { withHouse, lai, lo, totalLai, totalLo, net: totalLai - totalLo };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, variants]);
+
+  // Áp bộ lọc lãi/lỗ (chỉ tính đơn đã có giá nhà in)
+  const visible = useMemo(() => {
+    if (profitFilter === "all") return filtered;
+    return filtered.filter((o) => {
+      const p = orderProfit(o);
+      if (!p.hasHouse) return false;
+      return profitFilter === "profit" ? p.profit >= 0 : p.profit < 0;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, profitFilter, variants]);
+
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const paged = visible.slice((page - 1) * pageSize, page * pageSize);
 
   // Chọn nhiều đơn
   const pageIds = paged.map((o) => o.id);
@@ -538,6 +643,19 @@ export default function Sellers() {
     );
   };
 
+  // Giá đối chiếu: chỉ lưu để so sánh với Tổng, không đụng tới tổng tiền/công nợ.
+  const saveComparePrice = async (o: PodOrder, value: number | null) => {
+    await orderMut.update.mutateAsync({
+      id: o.id,
+      comparePrice: value,
+    } as any);
+    message.success(
+      value == null
+        ? `Đã xóa giá đối chiếu đơn ${o.orderCode}`
+        : `Đã lưu giá đối chiếu đơn ${o.orderCode}`
+    );
+  };
+
   // Đồng bộ đơn sang tab Nhà In (bảng printOrders) — mỗi item 1 dòng phiếu in.
   // Id cố định theo mã đơn + số thứ tự item nên gán lại nhà in chỉ update, không tạo trùng.
   const syncPrintOrders = async (o: PodOrder, printHouse: string) => {
@@ -619,22 +737,6 @@ export default function Sellers() {
     return row?.variantId || "";
   };
 
-  // Bảng giá phôi POD — dùng để breakdown giá (giá gốc + các khoản cộng thêm)
-  const { variants } = usePodVariants();
-  const findVar = (it: any) => {
-    const nrm = (x?: string) => (x || "").trim().toLowerCase();
-    const brandCands = [it.productName, blankName(it.productSku), it.productSku]
-      .map(nrm)
-      .filter(Boolean);
-    const pool = variants.filter((v) => brandCands.includes(nrm(v.product)));
-    if (!pool.length) return undefined;
-    const size = nrm(it.size);
-    const bySize = size ? pool.filter((v) => nrm(v.size) === size) : pool;
-    const p2 = bySize.length ? bySize : pool;
-    const color = nrm(it.color);
-    return p2.find((v) => nrm(v.color) === color) || p2[0];
-  };
-
   // Nội dung tooltip breakdown giá cho 1 đơn (hiển thị, không đổi tổng tiền)
   const priceTooltip = (o: PodOrder) => (
     <div className="text-xs leading-5">
@@ -704,6 +806,26 @@ export default function Sellers() {
           </div>
         );
       })}
+      {(() => {
+        const p = orderProfit(o);
+        if (!p.hasHouse) return null;
+        const win = p.profit >= 0;
+        return (
+          <div className="mt-2 pt-2 border-t border-white/30">
+            <div className="text-white/80">
+              Đơn giá: {money(p.dono)} − Giá nhà in: {money(p.house)}
+            </div>
+            <div
+              className={`font-bold ${
+                win ? "text-emerald-300" : "text-red-300"
+              }`}
+            >
+              {win ? "Lợi nhuận" : "Lỗ"}: {win ? "+" : "-"}
+              {money(Math.abs(p.profit))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 
@@ -949,10 +1071,24 @@ export default function Sellers() {
       </div>
 
       <div className="flex gap-6 mt-6 items-start flex-wrap lg:flex-nowrap">
-        {/* Danh sách seller */}
-        <div className="w-full lg:w-[300px] shrink-0">
-          <div className="text-[11px] tracking-widest text-gray-500 font-semibold mb-3">
-            DANH SÁCH SELLER - NEWEST
+        {/* Danh sách seller (ẩn được để bảng full width) */}
+        <div
+          className={`${
+            sellerPanelOpen ? "w-full lg:w-[280px]" : "hidden"
+          } shrink-0`}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[11px] tracking-widest text-gray-500 font-semibold">
+              DANH SÁCH SELLER - NEWEST
+            </div>
+            <Tooltip title="Ẩn danh sách seller">
+              <button
+                onClick={() => setSellerPanelOpen(false)}
+                className="w-6 h-6 rounded-md border border-gray-200 bg-white text-gray-500 inline-flex items-center justify-center cursor-pointer hover:bg-gray-100"
+              >
+                <FiChevronLeft size={14} />
+              </button>
+            </Tooltip>
           </div>
           <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
             {realSellers.map((seller) => {
@@ -1002,19 +1138,30 @@ export default function Sellers() {
                     </Tooltip>
                     <Popconfirm
                       title={`Xóa seller "${seller.name || seller.email}"?`}
-                      description={
-                        sellerStores.length
-                          ? `Seller đang có ${sellerStores.length} shop. Xóa seller không tự xóa shop/đơn. Không thể hoàn tác.`
-                          : "Hành động này không thể hoàn tác."
-                      }
+                      description="Xoá seller sẽ xoá TẤT CẢ đơn hàng và lô import PDF của seller này. Seller đang đăng nhập sẽ bị đá ra. Không thể hoàn tác."
                       okText="Xóa"
                       cancelText="Hủy"
-                      okButtonProps={{ danger: true }}
+                      okButtonProps={{
+                        danger: true,
+                        loading: removeSeller.isLoading,
+                      }}
                       onConfirm={async () => {
-                        await sellerMut.remove.mutateAsync(seller.id);
-                        message.success(
-                          `Đã xóa seller ${seller.name || seller.email}`
+                        const hide = message.loading(
+                          `Đang xóa seller ${seller.name || seller.email} và dữ liệu liên quan...`,
+                          0
                         );
+                        try {
+                          const res = await removeSeller.mutateAsync({
+                            id: seller.id,
+                          });
+                          hide();
+                          message.success(
+                            `Đã xóa seller ${seller.name || seller.email} — ${res.orders} đơn, ${res.queue} lô import`
+                          );
+                        } catch (e) {
+                          hide();
+                          message.error("Xóa seller thất bại. Vui lòng thử lại.");
+                        }
                       }}
                     >
                       <Tooltip title="Xóa seller">
@@ -1103,6 +1250,16 @@ export default function Sellers() {
           }
         >
           <div className="flex items-center gap-2 flex-wrap mb-3">
+            {!sellerPanelOpen && !tableFull && (
+              <Tooltip title="Hiện danh sách seller">
+                <button
+                  onClick={() => setSellerPanelOpen(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border border-gray-200 bg-white text-gray-600 font-medium"
+                >
+                  <FiUsers size={14} /> Seller
+                </button>
+              </Tooltip>
+            )}
             <button
               onClick={() => setTableFull((v) => !v)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border-0 bg-[#171826] text-white font-medium"
@@ -1139,21 +1296,93 @@ export default function Sellers() {
             </span>
           </div>
 
-          <div className="border border-gray-200 rounded-xl overflow-x-auto bg-white">
+          {/* Thống kê Lãi/Lỗ (đơn đã gán nhà in) — bấm để lọc nhanh */}
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            <span className="text-xs text-gray-400 font-medium mr-1">
+              Lợi nhuận (đơn có nhà in):
+            </span>
+            <button
+              onClick={() => {
+                setProfitFilter("all");
+                setPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border ${
+                profitFilter === "all"
+                  ? "bg-[#171826] text-white border-[#171826] font-medium"
+                  : "bg-white text-gray-600 border-gray-200"
+              }`}
+            >
+              Có nhà in: {profitStats.withHouse}
+            </button>
+            <button
+              onClick={() => {
+                setProfitFilter(profitFilter === "profit" ? "all" : "profit");
+                setPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border font-medium ${
+                profitFilter === "profit"
+                  ? "bg-emerald-600 text-white border-emerald-600"
+                  : "bg-white text-emerald-600 border-emerald-200"
+              }`}
+            >
+              🟢 Lãi: {profitStats.lai} đơn ({money(profitStats.totalLai)})
+            </button>
+            <button
+              onClick={() => {
+                setProfitFilter(profitFilter === "loss" ? "all" : "loss");
+                setPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border font-medium ${
+                profitFilter === "loss"
+                  ? "bg-red-500 text-white border-red-500"
+                  : "bg-white text-red-500 border-red-200"
+              }`}
+            >
+              🔴 Lỗ: {profitStats.lo} đơn ({money(profitStats.totalLo)})
+            </button>
+            <span
+              className={`px-3 py-1.5 rounded-lg text-[13px] font-bold border ${
+                profitStats.net >= 0
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-red-50 text-red-600 border-red-200"
+              }`}
+            >
+              Lãi ròng: {profitStats.net >= 0 ? "+" : "-"}
+              {money(Math.abs(profitStats.net))}
+            </span>
+            {profitFilter !== "all" && (
+              <span className="text-xs text-gray-400">
+                Đang lọc: {visible.length} đơn
+              </span>
+            )}
+          </div>
+
+          <div
+            className={`border border-gray-200 rounded-xl overflow-auto bg-white ${
+              tableFull ? "max-h-[calc(100vh-160px)]" : "max-h-[72vh]"
+            }`}
+          >
             <table className="w-full text-[13px] border-collapse min-w-[900px]">
-              <thead>
+              <thead className="[&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-gray-50">
                 <tr className="text-left text-gray-500 bg-gray-50 border-b border-gray-200">
-                  <th className="p-3 font-medium w-10">
+                  <th
+                    className="p-3 font-medium w-10"
+                    style={{ position: "sticky", left: 0, top: 0, zIndex: 20 }}
+                  >
                     <Checkbox
                       checked={allPageSelected}
                       indeterminate={!allPageSelected && somePageSelected}
                       onChange={(e) => togglePage(e.target.checked)}
                     />
                   </th>
-                  <th className="p-3 font-medium">Mã Đơn / Trạng thái</th>
+                  <th
+                    className="p-3 font-medium"
+                    style={{ position: "sticky", left: 44, top: 0, zIndex: 20 }}
+                  >
+                    Mã Đơn / Trạng thái
+                  </th>
                   <th className="p-3 font-medium">Shop & Khách</th>
-                  <th className="p-3 font-medium">Ngày Lên Đơn</th>
-                  <th className="p-3 font-medium">Ngày Thanh Toán</th>
+                  <th className="p-3 font-medium">Ngày</th>
                   <th className="p-3 font-bold text-amber-700">
                     Sản phẩm Gốc
                   </th>
@@ -1168,6 +1397,7 @@ export default function Sellers() {
                   <th className="p-3 font-medium text-right">Giá</th>
                   <th className="p-3 font-medium text-right">Phí</th>
                   <th className="p-3 font-medium text-right">Tổng</th>
+                  <th className="p-3 font-medium text-right">Giá đối chiếu</th>
                   <th className="p-3 font-medium">Thao tác</th>
                 </tr>
               </thead>
@@ -1175,20 +1405,38 @@ export default function Sellers() {
                 {paged.map((o) => {
                   const st = ORDER_STATUS[o.status];
                   const f = feesOf(o.userId);
+                  const sel = selectedIds.includes(o.id);
+                  const stickyBg = sel ? "#EFF4FF" : "#fff";
                   return (
                     <tr
                       key={o.id}
                       className={`border-b border-gray-50 align-top ${
-                        selectedIds.includes(o.id) ? "bg-[#EFF4FF]" : ""
+                        sel ? "bg-[#EFF4FF]" : ""
                       }`}
                     >
-                      <td className="p-3">
+                      <td
+                        className="p-3"
+                        style={{
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 5,
+                          background: stickyBg,
+                        }}
+                      >
                         <Checkbox
-                          checked={selectedIds.includes(o.id)}
+                          checked={sel}
                           onChange={(e) => toggleOne(o.id, e.target.checked)}
                         />
                       </td>
-                      <td className="p-3">
+                      <td
+                        className="p-3"
+                        style={{
+                          position: "sticky",
+                          left: 44,
+                          zIndex: 5,
+                          background: stickyBg,
+                        }}
+                      >
                         <div className="font-semibold text-gray-900">
                           {o.orderCode}
                         </div>
@@ -1211,25 +1459,24 @@ export default function Sellers() {
                         </div>
                       </td>
                       <td className="p-3 whitespace-nowrap">
-                        {dayjs(o.created).format("DD/MM/YYYY")}
-                      </td>
-                      <td className="p-3 whitespace-nowrap">
-                        {o.datePaid ? (
-                          <div className="inline-flex flex-col items-center">
-                            <span className="inline-block bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold rounded-md px-2 py-0.5">
-                              {dayjs(o.datePaid).format("D/M/YYYY")}
+                        <div className="text-gray-700">
+                          {dayjs(o.created).format("DD/MM/YYYY")}
+                        </div>
+                        <div className="mt-1">
+                          {o.datePaid ? (
+                            <span className="inline-block bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold rounded-md px-2 py-0.5 text-[11px]">
+                              TT {dayjs(o.datePaid).format("D/M HH:mm")}
                             </span>
-                            <span className="text-[11px] text-gray-400 mt-1">
-                              {dayjs(o.datePaid).format("HH:mm")}
+                          ) : o.status === "pending_payment" ? (
+                            <span className="text-gray-400 italic text-[11px]">
+                              Chưa thanh toán
                             </span>
-                          </div>
-                        ) : o.status === "pending_payment" ? (
-                          <span className="text-gray-400 italic">
-                            Chưa thanh toán
-                          </span>
-                        ) : (
-                          <span className="text-emerald-600">Đã thanh toán</span>
-                        )}
+                          ) : (
+                            <span className="text-emerald-600 text-[11px]">
+                              Đã thanh toán
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-3">
                         <div className="space-y-1.5">
@@ -1346,7 +1593,7 @@ export default function Sellers() {
                                   </div>
                                 }
                               >
-                                <span className="w-9 h-9 rounded-lg border-2 border-[#C6A15B] bg-[#FBF6EC] inline-flex items-center justify-center cursor-help text-[15px]">
+                                <span className="w-14 h-14 rounded-lg border-2 border-[#C6A15B] bg-[#FBF6EC] inline-flex items-center justify-center cursor-help text-[22px]">
                                   📝
                                 </span>
                               </Tooltip>
@@ -1378,7 +1625,7 @@ export default function Sellers() {
                             >
                               <span
                                 style={bgStyle}
-                                className={`inline-flex items-center justify-center w-9 h-9 rounded-md border border-gray-200 bg-gray-50 cursor-zoom-in overflow-hidden ${
+                                className={`inline-flex items-center justify-center w-14 h-14 rounded-md border border-gray-200 bg-gray-50 cursor-zoom-in overflow-hidden ${
                                   bg ? "p-[3px]" : ""
                                 }`}
                               >
@@ -1386,7 +1633,7 @@ export default function Sellers() {
                                   src={toDirectImageUrl(img)}
                                   alt="design"
                                   referrerPolicy="no-referrer"
-                                  className="w-full h-full object-cover rounded-[3px]"
+                                  className="w-full h-full object-contain rounded-[3px]"
                                 />
                               </span>
                             </Popover>
@@ -1466,6 +1713,29 @@ export default function Sellers() {
                             {money(o.total)}
                           </span>
                         </Tooltip>
+                        {(() => {
+                          const p = orderProfit(o);
+                          if (!p.hasHouse) return null;
+                          const win = p.profit >= 0;
+                          return (
+                            <Tooltip
+                              title={`Đơn giá ${money(p.dono)} − Giá nhà in ${money(
+                                p.house
+                              )} = ${win ? "lợi nhuận" : "lỗ"} ${money(
+                                Math.abs(p.profit)
+                              )}`}
+                            >
+                              <div
+                                className={`text-[11px] font-bold cursor-help ${
+                                  win ? "text-emerald-600" : "text-red-500"
+                                }`}
+                              >
+                                {win ? "LN +" : "Lỗ -"}
+                                {money(Math.abs(p.profit))}
+                              </div>
+                            </Tooltip>
+                          );
+                        })()}
                       </td>
                       <td className="p-3 text-right whitespace-nowrap">
                         <Tooltip
@@ -1490,6 +1760,66 @@ export default function Sellers() {
                       </td>
                       <td className="p-3 text-right font-bold whitespace-nowrap">
                         {money((o.total || 0) + f.extra)}
+                      </td>
+                      <td className="p-3 text-right whitespace-nowrap">
+                        {(() => {
+                          const grand = (o.total || 0) + f.extra;
+                          const cp = o.comparePrice;
+                          const hasCp = typeof cp === "number";
+                          const diff = hasCp ? (cp as number) - grand : 0;
+                          const pos = diff >= 0;
+                          return (
+                            <div className="inline-flex flex-col items-end gap-1">
+                              <InputNumber
+                                key={cp ?? ""}
+                                defaultValue={cp ?? undefined}
+                                controls={false}
+                                prefix="$"
+                                placeholder="Nhập giá"
+                                className="w-[110px]"
+                                onBlur={(e) => {
+                                  const raw = (e.target as HTMLInputElement).value
+                                    .replace(/[^0-9.\-]/g, "")
+                                    .trim();
+                                  const v = raw === "" ? null : Number(raw);
+                                  if (v !== (cp ?? null)) saveComparePrice(o, v);
+                                }}
+                              />
+                              {hasCp && (
+                                <Tooltip
+                                  title={
+                                    <div className="text-xs leading-5">
+                                      <div>
+                                        Giá đối chiếu: {money(cp as number)}
+                                      </div>
+                                      <div>Tổng đơn: {money(grand)}</div>
+                                      <div className="border-t border-white/20 my-1" />
+                                      <div>
+                                        Chênh lệch: {pos ? "+" : "-"}
+                                        {money(Math.abs(diff))} —{" "}
+                                        {diff === 0
+                                          ? "bằng Tổng"
+                                          : pos
+                                          ? "giá đối chiếu CAO hơn Tổng"
+                                          : "giá đối chiếu THẤP hơn Tổng"}
+                                      </div>
+                                    </div>
+                                  }
+                                >
+                                  <span
+                                    className={`text-[12px] font-bold cursor-help inline-flex items-center gap-1 ${
+                                      pos ? "text-emerald-600" : "text-red-500"
+                                    }`}
+                                  >
+                                    <FiInfo size={12} />
+                                    {pos ? "+" : "-"}
+                                    {money(Math.abs(diff))}
+                                  </span>
+                                </Tooltip>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="p-3">
                         <div className="flex items-center gap-1.5">
@@ -1545,28 +1875,26 @@ export default function Sellers() {
                 )}
               </tbody>
             </table>
-            {filtered.length > 0 && (
-              <div className="flex items-center justify-between p-3 border-t border-gray-100 text-sm text-gray-500">
-                <span>
-                  Đang hiện {paged.length} trên tổng số {filtered.length} đơn
+            {visible.length > 0 && (
+              <div className="flex items-center justify-between gap-3 flex-wrap p-3 border-t border-gray-100">
+                <span className="text-sm text-gray-500">
+                  Đang hiện {paged.length} / {visible.length} đơn · Trang {page}/
+                  {totalPages}
                 </span>
-                <span className="flex items-center gap-3">
-                  <Button
-                    size="small"
-                    disabled={page <= 1}
-                    onClick={() => setPage((p) => p - 1)}
-                  >
-                    ← Trước
-                  </Button>
-                  Trang {page} / {totalPages}
-                  <Button
-                    size="small"
-                    disabled={page >= totalPages}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Sau →
-                  </Button>
-                </span>
+                <Pagination
+                  current={page}
+                  pageSize={pageSize}
+                  total={visible.length}
+                  showSizeChanger
+                  pageSizeOptions={[20, 50, 100, 200, 500]}
+                  showQuickJumper
+                  showTotal={(t, [a, b]) => `${a}-${b} / ${t}`}
+                  onChange={(p, ps) => {
+                    // Đổi số dòng/trang -> về trang 1 để không bị nhảy lung tung
+                    setPage(ps !== pageSize ? 1 : p);
+                    setPageSize(ps);
+                  }}
+                />
               </div>
             )}
           </div>

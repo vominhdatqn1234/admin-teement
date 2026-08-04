@@ -95,6 +95,8 @@ export interface PodOrder {
   items: OrderItem[];
   note?: string;
   total: number;
+  /** Giá admin nhập để ĐỐI CHIẾU với Tổng (không ảnh hưởng tổng tiền) */
+  comparePrice?: number | null;
   created: string;
   /** Hạn giao Etsy (Scheduled to ship by) */
   shipBy?: string | null;
@@ -102,6 +104,24 @@ export interface PodOrder {
   dateShipped?: string | null;
   /** Trạng thái trước khi gửi Yêu cầu Hỗ trợ */
   prevStatus?: string | null;
+}
+
+/** Lô đơn import từ PDF do seller gửi, chờ admin duyệt. */
+export interface ImportBatch {
+  id: string;
+  storeId?: string;
+  storeName?: string;
+  userId?: string; // seller sở hữu lô
+  sellerName?: string;
+  fileName?: string;
+  source?: string; // 'pdf' | 'csv'
+  status: "pending" | "approved" | "rejected";
+  count: number;
+  orders: { id?: string; data: Partial<PodOrder> }[];
+  rejectedReason?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  created?: string;
 }
 
 export interface LedgerEntry {

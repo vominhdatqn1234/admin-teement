@@ -1,16 +1,13 @@
-# Netlify config — CLIENT site (base directory = repo root)
+# Netlify config — ADMIN site (base directory = admin-portal)
+# admin-portal giờ có package.json độc lập -> build riêng, không cần deps ở root.
 [build]
   command = "yarn build"
   publish = "build"
 
 [build.environment]
-  NODE_VERSION = "18"
-  # CRA coi warning là error khi CI=true (mặc định trên Netlify) -> tắt đi
+  NODE_VERSION = "20"
   CI = "false"
-  # Tránh out-of-memory khi build CRA lớn
   NODE_OPTIONS = "--max-old-space-size=4096"
-  # Các biến REACT_APP_* được bundle vào JS client — public by design (anon key, URL, cloud name, upload preset)
-  SECRETS_SCAN_OMIT_KEYS = "REACT_APP_SUPABASE_ANON_KEY,REACT_APP_SUPABASE_URL,REACT_APP_CLOUDINARY_CLOUD_NAME,REACT_APP_CLOUDINARY_UPLOAD_PRESET"
 
 # SPA fallback cho react-router
 [[redirects]]

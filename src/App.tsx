@@ -8,6 +8,7 @@ import DesignOrders from "./pages/DesignOrders";
 import Finance from "./pages/Finance";
 import ImportQueue from "./pages/ImportQueue";
 import Login from "./pages/Login";
+import OrderCare from "./pages/OrderCare";
 import PodPrices from "./pages/PodPrices";
 import PrintHouse from "./pages/PrintHouse";
 import Tracking from "./pages/Tracking";
@@ -27,6 +28,7 @@ export default function App() {
             <Route index element={<Navigate to="/app/finance" />} />
             <Route path="finance" element={<Finance />} />
             <Route path="sellers" element={<Sellers />} />
+            <Route path="order-care" element={<OrderCare />} />
             <Route path="import-queue" element={<ImportQueue />} />
             <Route path="services" element={<Services />} />
             <Route path="blanks" element={<Blanks />} />

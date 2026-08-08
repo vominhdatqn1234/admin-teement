@@ -104,6 +104,19 @@ export interface PodOrder {
   dateShipped?: string | null;
   /** Trạng thái trước khi gửi Yêu cầu Hỗ trợ */
   prevStatus?: string | null;
+  /** Số tiền hoàn / thời điểm hoàn */
+  refundedAmount?: number | null;
+  refundedAt?: string | null;
+  /* ----- CS / Chăm sóc đơn (tab Quản lý seller) ----- */
+  csAssignee?: string; // Nhân viên phụ trách
+  csStatus?: string; // '' Chưa xử lý | waiting Chờ khách | done Đã xử lý
+  csPartner?: string; // Đối tác
+  csCustomerMsg?: string; // Tin nhắn khách
+  csChangeInfo?: string; // Đổi thông tin
+  csAutoReplyAt?: string; // Thời gian trả lời tự động
+  csNote?: string; // Ghi chú / sticker
+  csEditedBy?: string; // Nhân viên chỉnh sửa gần nhất
+  csEditedAt?: string;
 }
 
 /** Lô đơn import từ PDF do seller gửi, chờ admin duyệt. */

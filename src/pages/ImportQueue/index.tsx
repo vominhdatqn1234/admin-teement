@@ -300,14 +300,21 @@ export default function ImportQueue() {
   const doApprove = async (batch: ImportBatch) => {
     setProgress({ done: 0, total: batch.count });
     try {
-      await approve.mutateAsync({
+      const res = await approve.mutateAsync({
         batch,
         reviewedBy: reviewer,
         onProgress: (done, total) => setProgress({ done, total }),
       });
-      message.success(
-        `Đã duyệt lô "${batch.fileName || "PDF"}" — ${batch.count} đơn đã lên hệ thống`
-      );
+      const ok = (res?.total || batch.count) - (res?.failed || 0);
+      if (res?.failed) {
+        message.warning(
+          `Đã duyệt "${batch.fileName || "PDF"}" — lên hệ thống ${ok}/${res.total} đơn, ${res.failed} đơn lỗi dữ liệu bị bỏ qua`
+        );
+      } else {
+        message.success(
+          `Đã duyệt lô "${batch.fileName || "PDF"}" — ${batch.count} đơn đã lên hệ thống`
+        );
+      }
     } catch (e) {
       message.error("Duyệt lô thất bại. Vui lòng thử lại.");
     } finally {

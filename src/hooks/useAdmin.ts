@@ -126,13 +126,16 @@ export function useSellerCascade() {
       id: string;
       onProgress?: (done: number, total: number) => void;
     }) => {
-      // Lấy stores của seller (đơn có thể thiếu userId nhưng luôn có storeId).
+      // Sở hữu đơn xác định qua SHOP: đơn thuộc seller nếu shop của đơn thuộc
+      // seller. KHÔNG dùng userId để nhận sở hữu, vì userId là tài khoản ĐÃ
+      // IMPORT đơn (một người có thể import hộ shop của seller khác) -> nếu xoá
+      // theo userId sẽ xoá nhầm đơn của seller khác.
       const allStores = await sbSelectAll("stores");
       const storeIds = new Set(
         allStores.filter((s: any) => s.userId === id).map((s: any) => s.id)
       );
       const belongs = (row: any) =>
-        row.userId === id || (row.storeId && storeIds.has(row.storeId));
+        row.storeId ? storeIds.has(row.storeId) : row.userId === id;
 
       // 1) Toàn bộ đơn của seller (khớp userId HOẶC storeId) — không giới hạn 1000.
       const allOrders = await sbSelectAll("podOrders");
@@ -157,6 +160,51 @@ export function useSellerCascade() {
   );
 
   return { removeSeller };
+}
+
+/**
+ * Xoá 1 shop kèm cascade: xoá tất cả đơn (podOrders) và lô import PDF
+ * (podImportQueue) thuộc shop đó, rồi mới xoá bản ghi shop.
+ */
+export function useStoreCascade() {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries(["adm-stores"]);
+    qc.invalidateQueries(["adm-orders"]);
+    qc.invalidateQueries(["adm-import-queue"]);
+  };
+
+  const removeStore = useMutation(
+    async ({
+      storeId,
+      onProgress,
+    }: {
+      storeId: string;
+      onProgress?: (done: number, total: number) => void;
+    }) => {
+      const allOrders = await sbSelectAll("podOrders");
+      const orderIds = allOrders
+        .filter((o: any) => o.storeId === storeId)
+        .map((o: any) => o.id);
+      const allQueue = await sbSelectAll("podImportQueue");
+      const queueIds = allQueue
+        .filter((q: any) => q.storeId === storeId)
+        .map((q: any) => q.id);
+
+      const total = orderIds.length + queueIds.length + 1;
+      await sbDeleteMany("podOrders", orderIds, (d) => onProgress?.(d, total));
+      await sbDeleteMany("podImportQueue", queueIds, (d) =>
+        onProgress?.(orderIds.length + d, total)
+      );
+      await deleteDoc(doc(storesRef, storeId));
+      onProgress?.(total, total);
+
+      return { orders: orderIds.length, queue: queueIds.length };
+    },
+    { onSuccess: invalidate }
+  );
+
+  return { removeStore };
 }
 
 /* ---------- Stores ---------- */
@@ -210,15 +258,28 @@ export function useImportQueueMutations() {
       onProgress?: (done: number, total: number) => void;
     }) => {
       const list = batch.orders || [];
-      // Chèn hàng loạt: mỗi request tối đa 500 đơn (thay vì 1 đơn/1 request).
+      // Chèn cả lô 500 đơn cho NHANH; lô nào lỗi mới chèn lại từng đơn để đơn
+      // hợp lệ vẫn vào. Upsert theo id nên duyệt lại không nhân đôi.
       const rows = list.map((row) => ({
         id: row.id || genId(),
         ...(row.data as any),
         userId: batch.userId || "",
       }));
       const CHUNK = 500;
+      let failed = 0;
       for (let i = 0; i < rows.length; i += CHUNK) {
-        await sbUpsert("podOrders", rows.slice(i, i + CHUNK));
+        const chunk = rows.slice(i, i + CHUNK);
+        try {
+          await sbUpsert("podOrders", chunk);
+        } catch {
+          for (const r of chunk) {
+            try {
+              await sbUpsert("podOrders", [r]);
+            } catch {
+              failed += 1;
+            }
+          }
+        }
         onProgress?.(Math.min(i + CHUNK, rows.length), rows.length);
       }
       await updateDoc(doc(importQueueRef, batch.id), {
@@ -226,6 +287,7 @@ export function useImportQueueMutations() {
         reviewedBy: reviewedBy || "admin",
         reviewedAt: new Date().toISOString(),
       });
+      return { total: list.length, failed };
     },
     { onSuccess: invalidate }
   );

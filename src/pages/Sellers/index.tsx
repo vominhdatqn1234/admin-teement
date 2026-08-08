@@ -44,6 +44,7 @@ import {
   useSellerCascade,
   useSellerMutations,
   useSellers,
+  useStoreCascade,
   useStoreMutations,
   useStores,
 } from "../../hooks/useAdmin";
@@ -94,6 +95,7 @@ export default function Sellers() {
   const sellerMut = useSellerMutations();
   const { removeSeller } = useSellerCascade();
   const storeMut = useStoreMutations();
+  const { removeStore } = useStoreCascade();
   const orderMut = useOrderMutations();
   const qc = useQueryClient();
 
@@ -417,6 +419,7 @@ export default function Sellers() {
           // Sản phẩm khách chọn
           "Sản phẩm",
           "SKU",
+          "Variant ID",
           "Màu",
           "Size",
           "Số lượng",
@@ -461,6 +464,8 @@ export default function Sellers() {
             // Sản phẩm
             joinItems(o, (it) => `${it.quantity}x ${it.productName || it.productSku || ""}`),
             joinItems(o, (it) => it.sku || it.productSku || ""),
+            // Variant ID tra theo Nhà In + phôi/màu/size của từng món
+            joinItems(o, (it) => findVariantId(o.printHouse, it)),
             joinItems(o, (it) => it.color || ""),
             joinItems(o, (it) => it.size || ""),
             joinItems(o, (it) => String(it.quantity ?? "")),
@@ -471,7 +476,7 @@ export default function Sellers() {
             joinItems(o, (it) => it.backUrl || ""),
             joinItems(o, (it) => it.mockupUrl || ""),
             // Thời gian & tài chính
-            dayjs(o.created).format("DD/MM/YYYY"),
+            o.created ? dayjs(o.created).format("DD/MM/YYYY") : "",
             o.datePaid ? dayjs(o.datePaid).format("DD/MM/YYYY") : "Chưa thanh toán",
             o.tracking || "",
             (o.total || 0).toFixed(2),
@@ -1460,7 +1465,9 @@ export default function Sellers() {
                       </td>
                       <td className="p-3 whitespace-nowrap">
                         <div className="text-gray-700">
-                          {dayjs(o.created).format("DD/MM/YYYY")}
+                          {o.created
+                            ? dayjs(o.created).format("DD/MM/YYYY")
+                            : "—"}
                         </div>
                         <div className="mt-1">
                           {o.datePaid ? (
@@ -2285,11 +2292,31 @@ export default function Sellers() {
                             </Popconfirm>
                             <Popconfirm
                               title={`Xóa shop "${st.name}"?`}
-                              description="Không thể hoàn tác."
+                              description="Xoá shop sẽ xoá TẤT CẢ đơn và lô import của shop này. Không thể hoàn tác."
                               okText="Xóa"
                               cancelText="Hủy"
-                              okButtonProps={{ danger: true }}
-                              onConfirm={() => storeMut.remove.mutate(st.id)}
+                              okButtonProps={{
+                                danger: true,
+                                loading: removeStore.isLoading,
+                              }}
+                              onConfirm={async () => {
+                                const hide = message.loading(
+                                  `Đang xoá shop "${st.name}" và đơn liên quan...`,
+                                  0
+                                );
+                                try {
+                                  const res = await removeStore.mutateAsync({
+                                    storeId: st.id,
+                                  });
+                                  hide();
+                                  message.success(
+                                    `Đã xoá shop "${st.name}" — ${res.orders} đơn, ${res.queue} lô import`
+                                  );
+                                } catch (e) {
+                                  hide();
+                                  message.error("Xoá shop thất bại. Thử lại.");
+                                }
+                              }}
                             >
                               <button className="text-red-500 bg-transparent border-0 cursor-pointer text-xs">
                                 Xóa

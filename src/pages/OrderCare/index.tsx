@@ -1,8 +1,18 @@
-import { Button, Input, Pagination, Select, Tooltip, message } from "antd";
+import {
+  Button,
+  Input,
+  Pagination,
+  Popconfirm,
+  Select,
+  Tooltip,
+  message,
+} from "antd";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import { FiClock, FiRotateCcw } from "react-icons/fi";
 import {
+  useCsEmployeeMutations,
+  useCsEmployees,
   useOrderMutations,
   useOrders,
   useSellers,
@@ -28,7 +38,23 @@ export default function OrderCare() {
   const { orders, isLoading } = useOrders();
   const { sellers } = useSellers();
   const { stores } = useStores();
+  const { employees } = useCsEmployees();
+  const csEmpMut = useCsEmployeeMutations();
   const orderMut = useOrderMutations();
+  const [newEmp, setNewEmp] = useState("");
+
+  const addEmployee = async () => {
+    const name = newEmp.trim();
+    if (!name) return;
+    if (employees.some((e: any) => e.name.toLowerCase() === name.toLowerCase())) {
+      message.warning("Nhân viên này đã có");
+      setNewEmp("");
+      return;
+    }
+    await csEmpMut.add.mutateAsync({ name, created: new Date().toISOString() });
+    message.success(`Đã tạo nhân viên "${name}"`);
+    setNewEmp("");
+  };
 
   const [statusTab, setStatusTab] = useState("all");
   const [search, setSearch] = useState("");
@@ -70,11 +96,8 @@ export default function OrderCare() {
 
   const assignees = useMemo(
     () =>
-      Array.from(
-        new Set(orders.map((o) => partnerOf(o)).filter((x) => x && x !== "—"))
-      ).sort(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [orders, storeOwner, sellerName]
+      Array.from(new Set(employees.map((e: any) => e.name).filter(Boolean))).sort(),
+    [employees]
   );
   const editors = useMemo(
     () =>
@@ -87,7 +110,14 @@ export default function OrderCare() {
   const filtered = useMemo(() => {
     return orders.filter((o) => {
       if (statusTab !== "all" && (o.csStatus || "") !== statusTab) return false;
-      if (assigneeFilter && partnerOf(o) !== assigneeFilter) return false;
+      if (
+        assigneeFilter &&
+        !(o.csAssignee || "")
+          .split(",")
+          .map((s) => s.trim())
+          .includes(assigneeFilter)
+      )
+        return false;
       if (editorFilter && (o.csEditedBy || "") !== editorFilter) return false;
       if (trackFilter === "has" && !(o.tracking || "").trim()) return false;
       if (trackFilter === "none" && (o.tracking || "").trim()) return false;
@@ -144,6 +174,51 @@ export default function OrderCare() {
         </p>
       </div>
 
+      {/* Tạo nhân viên: danh sách để gán vào cột Nhân viên */}
+      <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
+        <span className="text-[13px] font-semibold text-[#171826]">
+          Tạo nhân viên:
+        </span>
+        <Input
+          placeholder="Tên nhân viên..."
+          className="w-[220px]"
+          value={newEmp}
+          onChange={(e) => setNewEmp(e.target.value)}
+          onPressEnter={addEmployee}
+        />
+        <Button
+          type="primary"
+          className="bg-[#171826] border-0 font-bold"
+          loading={csEmpMut.add.isLoading}
+          onClick={addEmployee}
+        >
+          + Thêm
+        </Button>
+        {employees.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-gray-400">Đã có:</span>
+            {employees.map((e: any) => (
+              <span
+                key={e.id}
+                className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded-full pl-2.5 pr-1 py-0.5"
+              >
+                {e.name}
+                <Popconfirm
+                  title={`Xóa nhân viên "${e.name}"?`}
+                  okText="Xóa"
+                  cancelText="Hủy"
+                  onConfirm={() => csEmpMut.remove.mutate(e.id)}
+                >
+                  <button className="w-4 h-4 rounded-full text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer leading-none">
+                    ×
+                  </button>
+                </Popconfirm>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Tabs trạng thái CS */}
       <div className="bg-white rounded-2xl border border-gray-100 p-1.5 inline-flex gap-1 flex-wrap">
         {CS_TABS.map((t) => (
@@ -178,7 +253,7 @@ export default function OrderCare() {
         </div>
         <div>
           <div className="text-[11px] text-gray-400 font-semibold mb-1">
-            NHÂN VIÊN (SELLER)
+            NHÂN VIÊN PHỤ TRÁCH
           </div>
           <Select
             allowClear
@@ -236,7 +311,7 @@ export default function OrderCare() {
               </th>
               <th className="p-3 font-medium">Nhân viên</th>
               <th className="p-3 font-medium">Shop</th>
-              <th className="p-3 font-medium">Đối tác (Khách)</th>
+              <th className="p-3 font-medium">Đối tác</th>
               <th className="p-3 font-medium">Track</th>
               <th className="p-3 font-medium">Tin nhắn khách</th>
               <th className="p-3 font-medium">Đổi thông tin</th>
@@ -266,22 +341,49 @@ export default function OrderCare() {
                 const cs = CS_STATUS[o.csStatus || ""] || CS_STATUS[""];
                 const isReship = o.status === "reship";
                 const isRefund = o.status === "refund";
+                const assigned = (o.csAssignee || "")
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                // Đơn đã có nhân viên xử lý -> tô màu để dễ nhận biết.
+                const rowBg = assigned.length ? "#FFF7ED" : "#fff";
                 return (
-                  <tr key={o.id} className="border-b border-gray-50 align-top">
-                    {/* Mã đơn (ghim trái) */}
-                    <td className="p-3" style={stickyTd("#fff")}>
+                  <tr
+                    key={o.id}
+                    className="border-b border-gray-50 align-top"
+                    style={{ background: rowBg }}
+                  >
+                    {/* Mã đơn + Khách (ghim trái) */}
+                    <td className="p-3" style={stickyTd(rowBg)}>
                       <div className="font-bold text-[#171826]">
                         {o.orderCode}
                       </div>
+                      <div className="text-xs text-gray-400">
+                        {o.customerName || "—"}
+                      </div>
                     </td>
-                    {/* Nhân viên = seller/chủ shop của đơn */}
-                    <td className="p-3 whitespace-nowrap font-medium text-[#171826]">
-                      {partnerOf(o)}
+                    {/* Nhân viên xử lý: để trống, chọn nhiều từ danh sách đã tạo */}
+                    <td className="p-3 min-w-[180px]">
+                      <Select
+                        mode="multiple"
+                        size="small"
+                        allowClear
+                        placeholder="Chọn NV xử lý..."
+                        className="w-[180px]"
+                        value={assigned}
+                        onChange={(arr: string[]) =>
+                          patchCs(o, { csAssignee: arr.join(",") })
+                        }
+                        options={employees.map((e: any) => ({
+                          value: e.name,
+                          label: e.name,
+                        }))}
+                      />
                     </td>
                     <td className="p-3 whitespace-nowrap">{o.storeName || "—"}</td>
-                    {/* Đối tác = khách hàng của đơn */}
-                    <td className="p-3 whitespace-nowrap">
-                      {o.customerName || "—"}
+                    {/* Đối tác = seller/chủ shop của đơn */}
+                    <td className="p-3 whitespace-nowrap font-medium text-[#171826]">
+                      {partnerOf(o)}
                     </td>
                     {/* Track */}
                     <td className="p-3 min-w-[150px]">

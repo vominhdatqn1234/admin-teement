@@ -228,6 +228,16 @@ export function useOrders() {
 }
 export const useOrderMutations = crud(ordersRef, "adm-orders");
 
+/* ---------- Nhân viên CS (danh sách để gán vào đơn) ---------- */
+const csEmployeesRef = collection(db, "csEmployees");
+export function useCsEmployees() {
+  const q = useQuery(["adm-cs-employees"], () =>
+    getDocs(query(csEmployeesRef, orderBy("created", "desc")))
+  );
+  return { ...q, employees: toList<{ id: string; name: string }>(q.data) };
+}
+export const useCsEmployeeMutations = crud(csEmployeesRef, "adm-cs-employees");
+
 /* ---------- Hàng đợi import PDF (seller gửi, chờ admin duyệt) ---------- */
 export function useImportQueue() {
   const q = useQuery(["adm-import-queue"], () =>

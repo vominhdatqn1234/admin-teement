@@ -11,8 +11,9 @@ import {
   query,
   setDoc,
   updateDoc,
+  where,
 } from "../lib/db";
-import { sbSelectAll } from "../lib/supabase";
+import { sbSelectAll, sbDeleteMany, sbUpsert } from "../lib/supabase";
 import {
   BaseProduct,
   DesignRequest,
@@ -49,6 +50,16 @@ const printHousesRef = collection(db, "printHouses");
 const printHouseSkusRef = collection(db, "printHouseSkus");
 const importQueueRef = collection(db, "podImportQueue");
 
+// Sinh id ngẫu nhiên cho dòng import chưa có id.
+function genId(): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "";
+  for (let i = 0; i < 20; i++)
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  return id;
+}
+
 function toList<T>(snapshot: any): T[] {
   const out: T[] = [];
   snapshot?.forEach((d: any) => out.push({ id: d.id, ...d.data() }));
@@ -77,12 +88,8 @@ function crud(ref: any, key: string) {
       ) => {
         const ids = Array.isArray(arg) ? arg : arg.ids;
         const onProgress = Array.isArray(arg) ? undefined : arg.onProgress;
-        let done = 0;
-        for (const id of ids) {
-          await deleteDoc(doc(ref, id));
-          done += 1;
-          onProgress?.(done, ids.length);
-        }
+        // Xoá hàng loạt trong ít request nhất (id=in.(...)) -> nhanh hơn nhiều.
+        await sbDeleteMany(ref.table, ids, onProgress);
       },
       { onSuccess: invalidate }
     );
@@ -135,18 +142,14 @@ export function useSellerCascade() {
       const queueIds = allQueue.filter(belongs).map((q: any) => q.id);
 
       const total = orderIds.length + queueIds.length + 1;
-      let done = 0;
-      for (const oid of orderIds) {
-        await deleteDoc(doc(ordersRef, oid));
-        onProgress?.(++done, total);
-      }
-      for (const qid of queueIds) {
-        await deleteDoc(doc(importQueueRef, qid));
-        onProgress?.(++done, total);
-      }
+      // Xoá hàng loạt trong ít request nhất thay vì từng đơn một.
+      await sbDeleteMany("podOrders", orderIds, (d) => onProgress?.(d, total));
+      await sbDeleteMany("podImportQueue", queueIds, (d) =>
+        onProgress?.(orderIds.length + d, total)
+      );
       // 3) Xoá seller sau cùng -> lần guard kế tiếp bên client sẽ đá user ra.
       await deleteDoc(doc(sellersRef, id));
-      onProgress?.(++done, total);
+      onProgress?.(total, total);
 
       return { orders: orderIds.length, queue: queueIds.length };
     },
@@ -207,13 +210,16 @@ export function useImportQueueMutations() {
       onProgress?: (done: number, total: number) => void;
     }) => {
       const list = batch.orders || [];
-      let done = 0;
-      for (const row of list) {
-        const data = { ...row.data, userId: batch.userId || "" };
-        if (row.id) await setDoc(doc(ordersRef, row.id), data);
-        else await addDoc(ordersRef, data);
-        done += 1;
-        onProgress?.(done, list.length);
+      // Chèn hàng loạt: mỗi request tối đa 500 đơn (thay vì 1 đơn/1 request).
+      const rows = list.map((row) => ({
+        id: row.id || genId(),
+        ...(row.data as any),
+        userId: batch.userId || "",
+      }));
+      const CHUNK = 500;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        await sbUpsert("podOrders", rows.slice(i, i + CHUNK));
+        onProgress?.(Math.min(i + CHUNK, rows.length), rows.length);
       }
       await updateDoc(doc(importQueueRef, batch.id), {
         status: "approved",
@@ -251,7 +257,7 @@ export function useImportQueueMutations() {
 
   const removeMany = useMutation(
     async (ids: string[]) => {
-      for (const id of ids) await deleteDoc(doc(importQueueRef, id));
+      await sbDeleteMany("podImportQueue", ids);
     },
     { onSuccess: invalidate }
   );

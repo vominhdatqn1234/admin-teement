@@ -11,7 +11,6 @@ import {
   query,
   setDoc,
   updateDoc,
-  where,
 } from "../lib/db";
 import { sbSelectAll } from "../lib/supabase";
 import {
@@ -120,16 +119,20 @@ export function useSellerCascade() {
       id: string;
       onProgress?: (done: number, total: number) => void;
     }) => {
-      // 1) Toàn bộ đơn của seller
-      const ordersSnap = await getDocs(
-        query(ordersRef, where("userId", "==", id))
+      // Lấy stores của seller (đơn có thể thiếu userId nhưng luôn có storeId).
+      const allStores = await sbSelectAll("stores");
+      const storeIds = new Set(
+        allStores.filter((s: any) => s.userId === id).map((s: any) => s.id)
       );
-      const orderIds = toList<PodOrder>(ordersSnap).map((o) => o.id);
-      // 2) Các lô import PDF chờ duyệt của seller
-      const queueSnap = await getDocs(
-        query(importQueueRef, where("userId", "==", id))
-      );
-      const queueIds = toList<ImportBatch>(queueSnap).map((q) => q.id);
+      const belongs = (row: any) =>
+        row.userId === id || (row.storeId && storeIds.has(row.storeId));
+
+      // 1) Toàn bộ đơn của seller (khớp userId HOẶC storeId) — không giới hạn 1000.
+      const allOrders = await sbSelectAll("podOrders");
+      const orderIds = allOrders.filter(belongs).map((o: any) => o.id);
+      // 2) Các lô import PDF của seller.
+      const allQueue = await sbSelectAll("podImportQueue");
+      const queueIds = allQueue.filter(belongs).map((q: any) => q.id);
 
       const total = orderIds.length + queueIds.length + 1;
       let done = 0;
@@ -141,7 +144,7 @@ export function useSellerCascade() {
         await deleteDoc(doc(importQueueRef, qid));
         onProgress?.(++done, total);
       }
-      // 3) Xoá seller sau cùng -> lần guard kế tiếp bên client sẽ đá user ra
+      // 3) Xoá seller sau cùng -> lần guard kế tiếp bên client sẽ đá user ra.
       await deleteDoc(doc(sellersRef, id));
       onProgress?.(++done, total);
 

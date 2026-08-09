@@ -115,6 +115,9 @@ export interface PodOrder {
   csChangeInfo?: string; // Đổi thông tin
   csAutoReplyAt?: string; // Thời gian trả lời tự động
   csNote?: string; // Ghi chú / sticker
+  csFrontUrl?: string; // Link mặt trước
+  csBackUrl?: string; // Link mặt sau
+  csMockupUrl?: string; // Link mockup
   csEditedBy?: string; // Nhân viên chỉnh sửa gần nhất
   csEditedAt?: string;
 }

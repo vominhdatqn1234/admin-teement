@@ -1,5 +1,6 @@
 import {
   Button,
+  Image,
   Input,
   Pagination,
   Popconfirm,
@@ -10,6 +11,8 @@ import {
 import dayjs from "dayjs";
 import { useEffect, useMemo, useState } from "react";
 import { FiClock, FiRotateCcw } from "react-icons/fi";
+import UploadImgButton from "../../components/UploadImgButton";
+import { imageUrlCandidates } from "../../lib/imageUrl";
 import {
   useCsEmployeeMutations,
   useCsEmployees,
@@ -32,6 +35,70 @@ const CS_TABS = [
   { key: "waiting", label: "Chờ khách" },
   { key: "done", label: "Đã xử lý" },
 ];
+
+/** Ảnh nhỏ có fallback nhiều URL + xem lớn khi bấm. */
+function LinkThumb({ url, tag }: { url?: string; tag: string }) {
+  const [idx, setIdx] = useState(0);
+  const cands = url ? imageUrlCandidates(url) : [];
+  if (!url || idx >= cands.length) {
+    return (
+      <div className="w-[40px] h-[40px] shrink-0 rounded bg-gray-50 border border-gray-200 flex items-center justify-center text-[7px] font-bold text-gray-300 tracking-wider">
+        {tag}
+      </div>
+    );
+  }
+  return (
+    <div className="w-[40px] h-[40px] shrink-0 rounded bg-gray-50 border border-gray-200 overflow-hidden">
+      <Image
+        src={cands[idx]}
+        rootClassName="w-full h-full"
+        className="object-contain"
+        onError={() => setIdx((i) => i + 1)}
+        preview={{ mask: false }}
+      />
+    </div>
+  );
+}
+
+/** 1 ô link thiết kế: thumbnail + nhãn + ô dán link + nút upload (như client). */
+function LinkCell({
+  label,
+  color,
+  value,
+  onCommit,
+}: {
+  label: string;
+  color: string;
+  value?: string;
+  onCommit: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 border border-gray-200 rounded-lg p-1.5 bg-white w-[210px]">
+      <LinkThumb url={value} tag={label} />
+      <div className="flex-1 min-w-0">
+        <div
+          className="text-[9px] font-bold tracking-wider leading-none mb-0.5"
+          style={{ color }}
+        >
+          {label}
+        </div>
+        <Input
+          key={value || ""}
+          defaultValue={value || ""}
+          bordered={false}
+          size="small"
+          placeholder="Dán link..."
+          className="text-[11px] p-0"
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v !== (value || "")) onCommit(v);
+          }}
+        />
+      </div>
+      <UploadImgButton size="small" onUploaded={onCommit} />
+    </div>
+  );
+}
 
 export default function OrderCare() {
   const admin = useAdminUser();
@@ -93,6 +160,30 @@ export default function OrderCare() {
       csEditedBy: reviewer,
       csEditedAt: new Date().toISOString(),
     } as any);
+
+  // Ship lại = tạo MỘT ĐƠN MỚI HOÀN TOÀN (ID mới), copy dữ liệu đơn hiện tại.
+  const doReship = async (o: PodOrder) => {
+    const { id, created_at, ...rest } = o as any;
+    await orderMut.add.mutateAsync({
+      ...rest,
+      orderCode: `${o.orderCode}-RS`,
+      status: "reship",
+      tracking: "",
+      csStatus: "",
+      csAssignee: "",
+      csCustomerMsg: "",
+      csChangeInfo: "",
+      csNote: "",
+      csFrontUrl: "",
+      csBackUrl: "",
+      csMockupUrl: "",
+      csAutoReplyAt: "",
+      csEditedBy: reviewer,
+      csEditedAt: new Date().toISOString(),
+      created: new Date().toISOString(),
+    });
+    message.success(`Đã tạo đơn ship lại mới từ ${o.orderCode} (ID mới)`);
+  };
 
   const assignees = useMemo(
     () =>
@@ -315,6 +406,9 @@ export default function OrderCare() {
               <th className="p-3 font-medium">Track</th>
               <th className="p-3 font-medium">Tin nhắn khách</th>
               <th className="p-3 font-medium">Đổi thông tin</th>
+              <th className="p-3 font-medium">Link mặt trước</th>
+              <th className="p-3 font-medium">Link mặt sau</th>
+              <th className="p-3 font-medium">Mockup</th>
               <th className="p-3 font-medium">Ship lại</th>
               <th className="p-3 font-medium">Refund</th>
               <th className="p-3 font-medium">Trạng thái</th>
@@ -326,20 +420,19 @@ export default function OrderCare() {
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={13} className="p-12 text-center text-gray-400">
+                <td colSpan={16} className="p-12 text-center text-gray-400">
                   Đang tải...
                 </td>
               </tr>
             ) : paged.length === 0 ? (
               <tr>
-                <td colSpan={13} className="p-12 text-center text-gray-400">
+                <td colSpan={16} className="p-12 text-center text-gray-400">
                   Không có đơn nào
                 </td>
               </tr>
             ) : (
               paged.map((o) => {
                 const cs = CS_STATUS[o.csStatus || ""] || CS_STATUS[""];
-                const isReship = o.status === "reship";
                 const isRefund = o.status === "refund";
                 const assigned = (o.csAssignee || "")
                   .split(",")
@@ -362,23 +455,37 @@ export default function OrderCare() {
                         {o.customerName || "—"}
                       </div>
                     </td>
-                    {/* Nhân viên xử lý: để trống, chọn nhiều từ danh sách đã tạo */}
+                    {/* Nhân viên xử lý: chọn nhiều từ danh sách; CHỌN RỒI thì
+                        khóa lại (không cho sửa) — hiển thị dạng thẻ. */}
                     <td className="p-3 min-w-[180px]">
-                      <Select
-                        mode="multiple"
-                        size="small"
-                        allowClear
-                        placeholder="Chọn NV xử lý..."
-                        className="w-[180px]"
-                        value={assigned}
-                        onChange={(arr: string[]) =>
-                          patchCs(o, { csAssignee: arr.join(",") })
-                        }
-                        options={employees.map((e: any) => ({
-                          value: e.name,
-                          label: e.name,
-                        }))}
-                      />
+                      {assigned.length ? (
+                        <div className="flex flex-wrap gap-1">
+                          {assigned.map((n) => (
+                            <span
+                              key={n}
+                              className="text-[11px] font-semibold bg-[#EEF0FF] text-[#4338CA] rounded px-2 py-0.5"
+                            >
+                              {n}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <Select
+                          mode="multiple"
+                          size="small"
+                          allowClear
+                          placeholder="Chọn NV xử lý..."
+                          className="w-[180px]"
+                          value={assigned}
+                          onChange={(arr: string[]) =>
+                            patchCs(o, { csAssignee: arr.join(",") })
+                          }
+                          options={employees.map((e: any) => ({
+                            value: e.name,
+                            label: e.name,
+                          }))}
+                        />
+                      )}
                     </td>
                     <td className="p-3 whitespace-nowrap">{o.storeName || "—"}</td>
                     {/* Đối tác = seller/chủ shop của đơn */}
@@ -435,28 +542,48 @@ export default function OrderCare() {
                         }}
                       />
                     </td>
-                    {/* Ship lại */}
+                    {/* Link mặt trước / mặt sau / mockup — có thumbnail + upload */}
                     <td className="p-3">
-                      <Button
-                        size="small"
-                        icon={<FiRotateCcw size={12} />}
-                        className={`rounded-lg ${
-                          isReship
-                            ? "bg-indigo-600 text-white border-0"
-                            : ""
-                        }`}
-                        onClick={() =>
-                          patchCs(o, {
-                            status: isReship ? "in_production" : "reship",
-                          } as any).then(() =>
-                            message.success(
-                              isReship ? "Bỏ đánh dấu reship" : "Đã đánh dấu Ship lại"
-                            )
-                          )
-                        }
+                      <LinkCell
+                        label="FRONT"
+                        color="#3B82F6"
+                        value={o.csFrontUrl}
+                        onCommit={(v) => patchCs(o, { csFrontUrl: v })}
+                      />
+                    </td>
+                    <td className="p-3">
+                      <LinkCell
+                        label="BACK"
+                        color="#8B5CF6"
+                        value={o.csBackUrl}
+                        onCommit={(v) => patchCs(o, { csBackUrl: v })}
+                      />
+                    </td>
+                    <td className="p-3">
+                      <LinkCell
+                        label="MOCKUP"
+                        color="#059669"
+                        value={o.csMockupUrl}
+                        onCommit={(v) => patchCs(o, { csMockupUrl: v })}
+                      />
+                    </td>
+                    {/* Ship lại = tạo đơn mới hoàn toàn (ID mới) */}
+                    <td className="p-3">
+                      <Popconfirm
+                        title="Tạo đơn ship lại mới?"
+                        description="Sẽ tạo MỘT đơn mới hoàn toàn (ID mới) copy từ đơn này."
+                        okText="Ship lại"
+                        cancelText="Hủy"
+                        onConfirm={() => doReship(o)}
                       >
-                        {isReship ? "Reship ✓" : "Ship lại"}
-                      </Button>
+                        <Button
+                          size="small"
+                          icon={<FiRotateCcw size={12} />}
+                          className="rounded-lg"
+                        >
+                          Ship lại
+                        </Button>
+                      </Popconfirm>
                     </td>
                     {/* Refund */}
                     <td className="p-3 min-w-[150px]">

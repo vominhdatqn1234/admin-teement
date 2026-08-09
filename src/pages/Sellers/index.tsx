@@ -136,6 +136,7 @@ export default function Sellers() {
     discount: 0,
   });
   const trackingRef = useRef<HTMLInputElement>(null);
+  const compareRef = useRef<HTMLInputElement>(null);
 
   const realSellers = sellers.filter((s) => s.permission !== "Admin");
   const fulfilProducts = useMemo(
@@ -632,6 +633,35 @@ export default function Sellers() {
     message.success(`Đã cập nhật tracking cho ${count} đơn (chuyển Đang giao hàng)`);
   };
 
+  // Import file Giá đối chiếu: cột Order ID + Giá (đối chiếu). Đơn có id trong
+  // file sẽ được điền comparePrice; không đụng tới tổng tiền/công nợ.
+  const handleImportComparePrice = async (file: File) => {
+    const rows = parseCSV(await file.text());
+    let count = 0;
+    for (const r of rows) {
+      const code =
+        r["Order ID"] || r["Oder ID"] || r["orderCode"] || r["Mã đơn"];
+      const raw =
+        r["Giá đối chiếu"] ??
+        r["Gia doi chieu"] ??
+        r["Compare"] ??
+        r["Price"] ??
+        r["Giá"] ??
+        "";
+      if (!code) continue;
+      const num = String(raw).replace(/[^0-9.\-]/g, "").trim();
+      const value = num === "" ? null : Number(num);
+      const order = orders.find((o) => o.orderCode === String(code).trim());
+      if (!order) continue;
+      await orderMut.update.mutateAsync({
+        id: order.id,
+        comparePrice: value,
+      } as any);
+      count++;
+    }
+    message.success(`Đã cập nhật Giá đối chiếu cho ${count} đơn`);
+  };
+
   const approve = async (o: PodOrder, status: string) => {
     await orderMut.update.mutateAsync({ id: o.id, status });
     message.success(
@@ -845,6 +875,7 @@ export default function Sellers() {
             Quản lý đối tác và phê duyệt đơn hàng trước khi sản xuất.
           </p>
         </div>
+        <div className="flex items-center gap-3 flex-wrap">
         <Button
           type="primary"
           icon={<FiUpload />}
@@ -864,6 +895,25 @@ export default function Sellers() {
             e.target.value = "";
           }}
         />
+        <Button
+          icon={<FiUpload />}
+          className="h-[40px] rounded-lg font-medium"
+          onClick={() => compareRef.current?.click()}
+        >
+          Import Giá đối chiếu (CSV)
+        </Button>
+        <input
+          ref={compareRef}
+          type="file"
+          accept=".csv"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) handleImportComparePrice(f);
+            e.target.value = "";
+          }}
+        />
+        </div>
       </div>
 
       {/* Bộ lọc */}
@@ -1773,7 +1823,8 @@ export default function Sellers() {
                           const grand = (o.total || 0) + f.extra;
                           const cp = o.comparePrice;
                           const hasCp = typeof cp === "number";
-                          const diff = hasCp ? (cp as number) - grand : 0;
+                          // Chênh lệch = Tổng − Giá đối chiếu
+                          const diff = hasCp ? grand - (cp as number) : 0;
                           const pos = diff >= 0;
                           return (
                             <div className="inline-flex flex-col items-end gap-1">
@@ -1796,19 +1847,20 @@ export default function Sellers() {
                                 <Tooltip
                                   title={
                                     <div className="text-xs leading-5">
+                                      <div>Tổng đơn: {money(grand)}</div>
                                       <div>
                                         Giá đối chiếu: {money(cp as number)}
                                       </div>
-                                      <div>Tổng đơn: {money(grand)}</div>
                                       <div className="border-t border-white/20 my-1" />
                                       <div>
-                                        Chênh lệch: {pos ? "+" : "-"}
+                                        Chênh lệch (Tổng − Giá đối chiếu):{" "}
+                                        {pos ? "+" : "-"}
                                         {money(Math.abs(diff))} —{" "}
                                         {diff === 0
-                                          ? "bằng Tổng"
+                                          ? "bằng nhau"
                                           : pos
-                                          ? "giá đối chiếu CAO hơn Tổng"
-                                          : "giá đối chiếu THẤP hơn Tổng"}
+                                          ? "Tổng CAO hơn giá đối chiếu"
+                                          : "Tổng THẤP hơn giá đối chiếu"}
                                       </div>
                                     </div>
                                   }

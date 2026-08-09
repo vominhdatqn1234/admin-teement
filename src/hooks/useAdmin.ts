@@ -182,14 +182,21 @@ export function useStoreCascade() {
       storeId: string;
       onProgress?: (done: number, total: number) => void;
     }) => {
+      if (!storeId) return { orders: 0, queue: 0 };
+      // Chỉ xoá đơn khi khớp CẢ storeId LẪN tên shop (hoặc tên shop trống) — tránh
+      // xoá nhầm đơn đang hiển thị shop khác (vd shop từng đổi tên, storeName cũ).
+      const allStores = await sbSelectAll("stores");
+      const store = allStores.find((s: any) => s.id === storeId);
+      const nm = (store?.name || "").trim().toLowerCase();
+      const belongs = (o: any) => {
+        if (o.storeId !== storeId) return false;
+        const on = (o.storeName || "").trim().toLowerCase();
+        return !on || on === nm;
+      };
       const allOrders = await sbSelectAll("podOrders");
-      const orderIds = allOrders
-        .filter((o: any) => o.storeId === storeId)
-        .map((o: any) => o.id);
+      const orderIds = allOrders.filter(belongs).map((o: any) => o.id);
       const allQueue = await sbSelectAll("podImportQueue");
-      const queueIds = allQueue
-        .filter((q: any) => q.storeId === storeId)
-        .map((q: any) => q.id);
+      const queueIds = allQueue.filter(belongs).map((q: any) => q.id);
 
       const total = orderIds.length + queueIds.length + 1;
       await sbDeleteMany("podOrders", orderIds, (d) => onProgress?.(d, total));

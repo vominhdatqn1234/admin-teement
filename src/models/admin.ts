@@ -51,6 +51,58 @@ export function splitSizeFromColor(
   return { color: c, size: s };
 }
 
+/** Nhân viên CS — mỗi người có mã riêng (code) để nhận dạng khi xuất file */
+export interface CsEmployee {
+  id: string;
+  name: string;
+  /** Mã nhận dạng, vd NV001 — xuất ra file dạng "Phương(NV001)" */
+  code?: string;
+  created?: string;
+}
+
+/** Tên hiển thị kèm mã: "Phương(NV001)" */
+export function staffLabel(
+  name: string,
+  employees: { name: string; code?: string }[]
+): string {
+  const n = String(name || "").trim();
+  if (!n) return "";
+  const emp = employees.find(
+    (e) => String(e.name || "").trim().toLowerCase() === n.toLowerCase()
+  );
+  return emp?.code ? `${n}(${emp.code})` : n;
+}
+
+/** Chuỗi csAssignee (có thể nhiều tên, ngăn bởi dấu phẩy) -> kèm mã từng người */
+export function staffLabels(
+  assignee: string | undefined,
+  employees: { name: string; code?: string }[]
+): string {
+  return String(assignee || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((n) => staffLabel(n, employees))
+    .join(", ");
+}
+
+/**
+ * Mã đơn khách gửi TRƯỚC khi đơn được úp lên hệ thống ("Add ID").
+ * Khi đơn thật có đúng mã này xuất hiện → tự khớp và báo cho nhân viên.
+ */
+export interface PendingOrderId {
+  id: string;
+  orderCode: string;
+  note?: string;
+  createdBy?: string;
+  created?: string;
+  /** id đơn thật khi đã khớp ('' = còn chờ) */
+  matchedOrderId?: string;
+  matchedAt?: string;
+  /** nhân viên đã kiểm tra xong → tắt badge */
+  ackAt?: string;
+}
+
 export interface OrderItem {
   productName?: string;
   productSku?: string;
@@ -107,6 +159,15 @@ export interface PodOrder {
   /** Số tiền hoàn / thời điểm hoàn */
   refundedAmount?: number | null;
   refundedAt?: string | null;
+  /* ----- Xuất file cho xưởng ----- */
+  /** Thời điểm đơn được đưa vào file xuất cho xưởng ('' = chưa gửi) */
+  sentToFactoryAt?: string;
+  /** Ghi chú khi đơn có vấn đề — hiện đỏ trong file xuất */
+  factoryNote?: string;
+  /** Kiểu in admin nhập cho đơn (DTF/DTG) — xuất ra cột DTF/DTG */
+  dtfDtg?: string;
+  /** Card Code admin nhập — xuất ra cột Card Code */
+  cardCode?: string;
   /* ----- CS / Chăm sóc đơn (tab Quản lý seller) ----- */
   csAssignee?: string; // Nhân viên phụ trách
   csStatus?: string; // '' Chưa xử lý | waiting Chờ khách | done Đã xử lý
@@ -227,6 +288,8 @@ export interface PodVariant {
   priceFashship?: number; // Giá Fashship
   price3D?: number; // Giá 3D
   priceTeement?: number; // Giá Teement
+  /** Giá riêng theo từng nhà in: { "<tên nhà in>": giá } */
+  housePrices?: Record<string, number>;
   created?: string;
 }
 

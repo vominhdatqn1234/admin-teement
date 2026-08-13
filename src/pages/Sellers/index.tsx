@@ -37,6 +37,7 @@ import {
   useBaseProducts,
   useOrderMutations,
   useOrders,
+  useCsEmployees,
   usePodColors,
   usePodVariants,
   usePrintHouses,
@@ -49,7 +50,7 @@ import {
   useStores,
 } from "../../hooks/useAdmin";
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
-import { sbUpsert } from "../../lib/supabase";
+import { sbUpdateMany, sbUpsert } from "../../lib/supabase";
 import { useQueryClient } from "react-query";
 import {
   ORDER_STATUS,
@@ -57,8 +58,16 @@ import {
   PodOrder,
   Seller,
   splitSizeFromColor,
+  staffLabels,
 } from "../../models/admin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
+import {
+  DESIGN_FIELDS,
+  MOCKUP_FIELDS,
+  exportFactoryXlsx,
+  factoryRowStyle,
+  productNote,
+} from "../../lib/factoryExport";
 import { toDirectImageUrl } from "../../lib/imageUrl";
 
 const STATUS_TABS = [
@@ -81,6 +90,7 @@ export default function Sellers() {
   const { stores } = useStores();
   const { orders } = useOrders();
   const { products } = useBaseProducts();
+  const { employees } = useCsEmployees();
   const { colors: podColors } = usePodColors();
   // Tên phôi trong Kho Phôi POD theo SKU (vd TM-000-16 -> T-Shirt Comfort)
   const blankName = (sku?: string) =>
@@ -124,6 +134,7 @@ export default function Sellers() {
   const [profitFilter, setProfitFilter] = useState<"all" | "profit" | "loss">(
     "all"
   );
+  const [exportingFactory, setExportingFactory] = useState(false);
   const [detail, setDetail] = useState<PodOrder | null>(null);
   const [sellerDetail, setSellerDetail] = useState<Seller | null>(null);
   const [sellerEdit, setSellerEdit] = useState<Seller | null>(null);
@@ -169,6 +180,74 @@ export default function Sellers() {
     };
   };
 
+  // ---- Tìm kiếm nhanh: gom mọi thông tin dễ nhớ của đơn thành 1 chuỗi ----
+  // Gõ nhiều từ khoá cách nhau bởi dấu cách = phải khớp TẤT CẢ (AND).
+  const sellerById = useMemo(() => {
+    const m = new Map<string, Seller>();
+    sellers.forEach((s) => m.set(s.id, s));
+    return m;
+  }, [sellers]);
+
+  const searchIndex = useMemo(() => {
+    const m = new Map<string, string>();
+    orders.forEach((o: any) => {
+      const seller = o.userId ? sellerById.get(o.userId) : undefined;
+      const items = Array.isArray(o.items) ? o.items : [];
+      m.set(
+        o.id,
+        [
+          o.orderCode,
+          o.storeName,
+          o.customerName,
+          o.customerEmail,
+          o.customerPhone,
+          o.tracking,
+          o.printHouse,
+          o.note,
+          o.status,
+          ORDER_STATUS[o.status]?.label,
+          seller?.name,
+          seller?.email,
+          o.address1,
+          o.address2,
+          o.city,
+          o.state,
+          o.zip,
+          o.country,
+          o.created ? dayjs(o.created).format("DD/MM/YYYY") : "",
+          ...items.flatMap((it: any) => [
+            it?.productName,
+            it?.productSku,
+            it?.sku,
+            it?.color,
+            it?.size,
+            it?.origType,
+            it?.origColor,
+            it?.origSize,
+            it?.origTitle,
+            it?.personalization,
+            it?.note,
+            it?.transactionId,
+          ]),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+      );
+    });
+    return m;
+  }, [orders, sellerById]);
+
+  const searchTerms = useMemo(
+    () =>
+      searchCode
+        .toLowerCase()
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter(Boolean),
+    [searchCode]
+  );
+
   const filtered = useMemo(() => {
     return orders.filter((o) => {
       if (statusTab !== "all" && o.status !== statusTab) return false;
@@ -210,11 +289,10 @@ export default function Sellers() {
           shipBy!.isAfter(today.add(2, "day")))
       )
         return false;
-      if (
-        searchCode &&
-        !o.orderCode?.toLowerCase().includes(searchCode.toLowerCase())
-      )
-        return false;
+      if (searchTerms.length) {
+        const hay = searchIndex.get(o.id) || "";
+        if (!searchTerms.every((t) => hay.includes(t))) return false;
+      }
       if (fromDate && dayjs(o.created).isBefore(dayjs(fromDate), "day"))
         return false;
       if (toDate && dayjs(o.created).isAfter(dayjs(toDate), "day"))
@@ -231,7 +309,8 @@ export default function Sellers() {
     productFilter,
     designFilter,
     shipByFilter,
-    searchCode,
+    searchTerms,
+    searchIndex,
     fromDate,
     toDate,
   ]);
@@ -490,6 +569,8 @@ export default function Sellers() {
       )
     );
   };
+  // Giữ lại để dùng khi cần bật lại nút "Xuất CSV (Kết quả lọc)"
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleExport = () => exportOrders(filtered, "admin-orders.csv");
 
   const selectedOrders = () =>
@@ -501,6 +582,66 @@ export default function Sellers() {
   };
   const handleExportSelected = () =>
     exportOrders(selectedOrders(), "selected-orders.csv");
+
+  /* ---------------- Xuất file cho XƯỞNG (.xlsx có tô màu) ----------------
+   * Xuất xong tự đánh dấu các đơn là "đã chuyển xưởng" (sentToFactoryAt) để
+   * lần sau nhìn màu là biết đơn nào đã đẩy đi. Đơn đã có mốc này thì giữ
+   * nguyên mốc cũ (không ghi đè ngày gửi lần đầu).
+   */
+  const handleExportFactory = async (list: PodOrder[]) => {
+    if (!list.length) {
+      message.warning("Không có đơn nào để xuất");
+      return;
+    }
+    setExportingFactory(true);
+    try {
+      const stamp = dayjs().format("YYYY-MM-DD_HHmm");
+      const lines = exportFactoryXlsx(list, {
+        findVariantId,
+        staffLabel: (assignee) => staffLabels(assignee, employees),
+        fileName: `don-gui-xuong_${stamp}.xlsx`,
+      });
+      const now = new Date().toISOString();
+      const fresh = list.filter((o) => !String(o.sentToFactoryAt || "").trim());
+      if (fresh.length) {
+        // Đánh dấu hàng loạt bằng PATCH theo lô (không dùng upsert: payload
+        // thiếu cột sẽ vướng ràng buộc NOT NULL của podOrders)
+        await sbUpdateMany(
+          "podOrders",
+          fresh.map((o) => o.id),
+          { sentToFactoryAt: now }
+        );
+        qc.invalidateQueries(["adm-orders"]);
+      }
+      message.success(
+        `Đã xuất ${list.length} đơn (${lines} dòng sản phẩm)` +
+          (fresh.length ? ` · đánh dấu ${fresh.length} đơn đã chuyển xưởng` : "")
+      );
+    } catch (e: any) {
+      message.error(`Xuất file lỗi: ${e?.message || e}`);
+    } finally {
+      setExportingFactory(false);
+    }
+  };
+
+  /** Bỏ đánh dấu đã chuyển xưởng (khi cần gửi lại đơn cho xưởng) */
+  const unmarkFactory = async (o: PodOrder) => {
+    await orderMut.update.mutateAsync({ id: o.id, sentToFactoryAt: "" } as any);
+    message.success(`Đơn ${o.orderCode}: bỏ đánh dấu đã chuyển xưởng`);
+  };
+
+  const saveFactoryNote = async (o: PodOrder, note: string) => {
+    await orderMut.update.mutateAsync({ id: o.id, factoryNote: note } as any);
+  };
+  const saveDtfDtg = async (o: PodOrder, v: string) => {
+    await orderMut.update.mutateAsync({ id: o.id, dtfDtg: v } as any);
+  };
+  const saveCardCode = async (o: PodOrder, v: string) => {
+    await orderMut.update.mutateAsync({ id: o.id, cardCode: v } as any);
+  };
+  const saveAssignee = async (o: PodOrder, name: string) => {
+    await orderMut.update.mutateAsync({ id: o.id, csAssignee: name } as any);
+  };
 
   // Trả đơn về trạng thái trước đó trong luồng xử lý.
   // Đơn "Chờ duyệt" không lùi được nữa (không quay về Chưa thanh toán).
@@ -954,14 +1095,32 @@ export default function Sellers() {
           />
         </div>
         <div>
-          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
-            MÃ ĐƠN HÀNG (ID)
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1 flex items-center gap-1">
+            TÌM KIẾM NHANH
+            <Tooltip
+              title={
+                <div className="text-xs">
+                  Tìm trong: mã đơn, tên/email/SĐT khách, tracking, shop,
+                  seller, nhà in, SKU &amp; tên phôi, màu, size,
+                  personalization, địa chỉ, ngày (DD/MM/YYYY), trạng thái, ghi
+                  chú.
+                  <br />
+                  Gõ nhiều từ cách nhau bởi dấu cách để lọc chồng nhau — ví dụ{" "}
+                  <b>gildan black</b>.
+                </div>
+              }
+            >
+              <span className="cursor-help text-gray-300">ⓘ</span>
+            </Tooltip>
           </div>
           <Input
-            className="w-[160px]"
-            placeholder="Tìm mã đơn..."
+            className="w-[280px]"
+            placeholder="Mã đơn, khách, tracking, SKU, shop..."
             value={searchCode}
-            onChange={(e) => setSearchCode(e.target.value)}
+            onChange={(e) => {
+              setSearchCode(e.target.value);
+              setPage(1);
+            }}
             allowClear
           />
         </div>
@@ -1120,9 +1279,27 @@ export default function Sellers() {
         >
           Làm mới
         </Button>
-        <Button icon={<FiDownload />} onClick={handleExport}>
-          Xuất CSV (Kết quả lọc)
-        </Button>
+        {/* Nút "Xuất CSV (Kết quả lọc)" đã ẩn — dùng "Xuất file" (XLSX) bên dưới */}
+        <Tooltip
+          title={
+            <div className="text-xs leading-5">
+              Xuất .xlsx đúng mẫu sheet của xưởng (mỗi sản phẩm 1 dòng).
+              <br />
+              Đơn trong file sẽ được đánh dấu <b>đã chuyển xưởng</b> và tô{" "}
+              <b>vàng</b>; có tracking tự chuyển <b>xanh</b>; có Note thì{" "}
+              <b>đỏ</b>.
+            </div>
+          }
+        >
+          <Button
+            type="primary"
+            icon={<FiDownload />}
+            loading={exportingFactory}
+            onClick={() => handleExportFactory(filtered)}
+          >
+            Xuất file
+          </Button>
+        </Tooltip>
       </div>
 
       <div className="flex gap-6 mt-6 items-start flex-wrap lg:flex-nowrap">
@@ -1448,7 +1625,15 @@ export default function Sellers() {
                   <th className="p-3 font-medium">Thiết kế</th>
                   <th className="p-3 font-medium">Nhà In</th>
                   <th className="p-3 font-medium">Variant ID</th>
+                  <th className="p-3 font-medium">DTF/DTG</th>
                   <th className="p-3 font-medium">Tracking</th>
+                  <th className="p-3 font-medium">
+                    <Tooltip title="Đơn có ghi chú sẽ tô ĐỎ trong file gửi xưởng">
+                      <span className="cursor-help">Note (vấn đề)</span>
+                    </Tooltip>
+                  </th>
+                  <th className="p-3 font-medium">Nhân viên xử lý</th>
+                  <th className="p-3 font-medium">Gửi xưởng</th>
                   <th className="p-3 font-medium text-right">Giá</th>
                   <th className="p-3 font-medium text-right">Phí</th>
                   <th className="p-3 font-medium text-right">Tổng</th>
@@ -1746,6 +1931,23 @@ export default function Sellers() {
                           )}
                         </div>
                       </td>
+                      {/* DTF/DTG — field riêng, admin tự nhập */}
+                      <td className="p-3">
+                        <Input
+                          key={o.dtfDtg || ""}
+                          size="small"
+                          placeholder="DTF/DTG..."
+                          defaultValue={o.dtfDtg || ""}
+                          className="w-[110px]"
+                          onPressEnter={(e) =>
+                            (e.target as HTMLInputElement).blur()
+                          }
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v !== (o.dtfDtg || "")) saveDtfDtg(o, v);
+                          }}
+                        />
+                      </td>
                       <td className="p-3">
                         {/* Cho sửa tracking ở MỌI trạng thái đơn */}
                         <Input
@@ -1762,6 +1964,84 @@ export default function Sellers() {
                             if (v !== (o.tracking || "")) saveTracking(o, v);
                           }}
                         />
+                      </td>
+                      {/* Note vấn đề của đơn — có note thì file xuất tô ĐỎ */}
+                      <td className="p-3">
+                        <Input.TextArea
+                          key={o.factoryNote || ""}
+                          size="small"
+                          placeholder="Đơn có vấn đề gì..."
+                          defaultValue={o.factoryNote || ""}
+                          autoSize={{ minRows: 1, maxRows: 3 }}
+                          className="w-[190px]"
+                          status={o.factoryNote ? "error" : undefined}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v !== (o.factoryNote || ""))
+                              saveFactoryNote(o, v);
+                          }}
+                        />
+                      </td>
+                      {/* Nhân viên xử lý — chọn từ danh sách hoặc gõ tay */}
+                      <td className="p-3">
+                        <Select
+                          size="small"
+                          className="w-[150px]"
+                          placeholder="Chọn nhân viên"
+                          allowClear
+                          showSearch
+                          value={o.csAssignee || undefined}
+                          options={employees.map((e) => ({
+                            value: e.name,
+                            label: e.code ? `${e.name} (${e.code})` : e.name,
+                          }))}
+                          filterOption={(input, opt) =>
+                            String(opt?.label || "")
+                              .toLowerCase()
+                              .includes(input.toLowerCase())
+                          }
+                          onChange={(v) => saveAssignee(o, String(v || ""))}
+                        />
+                      </td>
+                      {/* Tình trạng gửi xưởng — tô màu giống file xuất */}
+                      <td className="p-3 whitespace-nowrap">
+                        {(() => {
+                          const style = factoryRowStyle(o);
+                          const map = {
+                            red: { bg: "#FFD4D4", fg: "#B91C1C", label: "Có vấn đề" },
+                            green: { bg: "#D7F5DF", fg: "#15803D", label: "Đã có track" },
+                            yellow: { bg: "#FFF3C4", fg: "#B7791F", label: "Đã gửi xưởng" },
+                            default: { bg: "#F3F4F6", fg: "#9CA3AF", label: "Chưa gửi" },
+                            header: { bg: "#F3F4F6", fg: "#9CA3AF", label: "Chưa gửi" },
+                          } as const;
+                          const m = map[style];
+                          return (
+                            <Tooltip
+                              title={
+                                o.sentToFactoryAt
+                                  ? `Đã đưa vào file xuất lúc ${dayjs(
+                                      o.sentToFactoryAt
+                                    ).format("DD/MM/YYYY HH:mm")}`
+                                  : "Chưa có trong file xuất nào"
+                              }
+                            >
+                              <span
+                                className="inline-block text-[10px] font-bold rounded px-1.5 py-0.5"
+                                style={{ background: m.bg, color: m.fg }}
+                              >
+                                {m.label}
+                              </span>
+                            </Tooltip>
+                          );
+                        })()}
+                        {o.sentToFactoryAt ? (
+                          <button
+                            onClick={() => unmarkFactory(o)}
+                            className="block mt-1 text-[10px] text-gray-400 bg-transparent border-0 cursor-pointer underline p-0 hover:text-gray-600"
+                          >
+                            Bỏ đánh dấu
+                          </button>
+                        ) : null}
                       </td>
                       <td className="p-3 text-right font-semibold whitespace-nowrap">
                         <Tooltip title={priceTooltip(o)}>
@@ -2155,28 +2435,80 @@ export default function Sellers() {
                   items.map((it, i) => (
                     <div
                       key={i}
-                      className="border border-gray-200 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap"
+                      className="border border-gray-200 rounded-lg p-3 space-y-2"
                     >
-                      <div>
-                        <div className="font-medium">
-                          {it.quantity}x{" "}
-                          {it.productName ||
-                            it.productSku ||
-                            (it as any).sku ||
-                            "—"}{" "}
-                          {it.size && `· ${it.size}`}{" "}
-                          {it.color && `· ${it.color}`}
-                        </div>
-                        {it.personalization && (
-                          <div className="text-xs text-amber-600">
-                            Personalization: {it.personalization}
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div>
+                          <div className="font-medium">
+                            {it.quantity}x{" "}
+                            {it.productName ||
+                              it.productSku ||
+                              (it as any).sku ||
+                              "—"}{" "}
+                            {it.size && `· ${it.size}`}{" "}
+                            {it.color && `· ${it.color}`}
                           </div>
-                        )}
-                        {it.note && (
-                          <div className="text-xs text-gray-400">{it.note}</div>
-                        )}
+                          <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-4">
+                            <span>
+                              Variant ID:{" "}
+                              <b className="font-mono text-[#2563EB]">
+                                {findVariantId(detail.printHouse, it) ||
+                                  (detail.printHouse
+                                    ? "Chưa có mã"
+                                    : "Chưa gán nhà in")}
+                              </b>
+                            </span>
+                            <span>
+                              Special Print:{" "}
+                              <b
+                                className={
+                                  it.printArea === "special"
+                                    ? "text-orange-600"
+                                    : "text-gray-400"
+                                }
+                              >
+                                {it.printArea === "special" ? "x" : "—"}
+                              </b>
+                            </span>
+                          </div>
+                          {productNote(it) && (
+                            <div className="text-xs text-amber-600 mt-0.5">
+                              Product Note: {productNote(it)}
+                            </div>
+                          )}
+                        </div>
+                        <b>{money((it.price || 0) * (it.quantity || 1))}</b>
                       </div>
-                      <b>{money((it.price || 0) * (it.quantity || 1))}</b>
+
+                      {/* Design & Mockup — đúng các ô sẽ nằm trong file xưởng */}
+                      <div className="grid grid-cols-2 gap-x-4 border-t border-gray-100 pt-2">
+                        {[...DESIGN_FIELDS, ...MOCKUP_FIELDS].map((f) => {
+                          const url = f.url(it);
+                          return (
+                            <div
+                              key={f.label}
+                              className="flex items-baseline gap-1 text-xs py-0.5"
+                            >
+                              <span className="text-gray-400 shrink-0 w-[120px]">
+                                {f.label}
+                              </span>
+                              {url ? (
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[#2563EB] underline truncate"
+                                  title={url}
+                                >
+                                  {url}
+                                </a>
+                              ) : (
+                                <span className="text-gray-300">—</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ))
                 ) : (
@@ -2184,6 +2516,84 @@ export default function Sellers() {
                     Đơn chưa có sản phẩm chi tiết
                   </div>
                 )}
+
+                {/* 4 field admin tự nhập — đi thẳng vào file gửi xưởng */}
+                <div className="border border-gray-200 rounded-lg p-3 space-y-2">
+                  <div className="text-[11px] tracking-widest text-gray-400 font-medium">
+                    ADMIN NHẬP (XUẤT RA FILE XƯỞNG)
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">DTF/DTG</div>
+                      <Input
+                        key={`dtf-${detail.id}-${detail.dtfDtg || ""}`}
+                        size="small"
+                        placeholder="DTF/DTG..."
+                        defaultValue={detail.dtfDtg || ""}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v !== (detail.dtfDtg || ""))
+                            saveDtfDtg(detail, v);
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">Card Code</div>
+                      <Input
+                        key={`card-${detail.id}-${detail.cardCode || ""}`}
+                        size="small"
+                        placeholder="Card Code..."
+                        defaultValue={detail.cardCode || ""}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v !== (detail.cardCode || ""))
+                            saveCardCode(detail, v);
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">
+                        Note (đơn có vấn đề)
+                      </div>
+                      <Input.TextArea
+                        key={`note-${detail.id}-${detail.factoryNote || ""}`}
+                        size="small"
+                        placeholder="Đơn có vấn đề gì..."
+                        autoSize={{ minRows: 1, maxRows: 4 }}
+                        defaultValue={detail.factoryNote || ""}
+                        status={detail.factoryNote ? "error" : undefined}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v !== (detail.factoryNote || ""))
+                            saveFactoryNote(detail, v);
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">
+                        Nhân viên xử lý
+                      </div>
+                      <Select
+                        size="small"
+                        className="w-full"
+                        placeholder="Chọn nhân viên"
+                        allowClear
+                        showSearch
+                        value={detail.csAssignee || undefined}
+                        options={employees.map((e) => ({
+                          value: e.name,
+                          label: e.code ? `${e.name} (${e.code})` : e.name,
+                        }))}
+                        filterOption={(input, opt) =>
+                          String(opt?.label || "")
+                            .toLowerCase()
+                            .includes(input.toLowerCase())
+                        }
+                        onChange={(v) => saveAssignee(detail, String(v || ""))}
+                      />
+                    </div>
+                  </div>
+                </div>
 
                 {(() => {
                   const f = feesOf(detail.userId);
@@ -2496,6 +2906,13 @@ export default function Sellers() {
               className="flex items-center gap-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer"
             >
               <FiDownload size={15} /> Tải CSV
+            </button>
+            <button
+              onClick={() => handleExportFactory(selectedOrders())}
+              disabled={exportingFactory}
+              className="flex items-center gap-1.5 bg-[#C6A15B] hover:bg-[#B79351] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer disabled:opacity-50"
+            >
+              <FiDownload size={15} /> Gửi xưởng (XLSX)
             </button>
             <button
               onClick={() => setAssignOpen(true)}

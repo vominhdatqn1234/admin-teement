@@ -32,7 +32,7 @@ import {
 import UploadImgButton from "../../components/UploadImgButton";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { sbUpsert } from "../../lib/supabase";
-import { PrintOrder } from "../../models/admin";
+import { PrintHouseSku, PrintOrder } from "../../models/admin";
 
 // Nguồn duy nhất: field <-> cột CSV (đúng thứ tự file gốc)
 const FIELDS: { key: keyof PrintOrder; csv: string }[] = [
@@ -339,6 +339,65 @@ function PrintHouseSkuManager() {
   } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /* --------- Thêm / sửa 1 dòng SKU thủ công --------- */
+  // editing = null: đang đóng | "new": thêm mới | id: sửa dòng đó
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [skuDraft, setSkuDraft] = useState<Partial<PrintHouseSku>>({});
+  const [saving, setSaving] = useState(false);
+
+  const openNewSku = () => {
+    setSkuDraft({ printHouse: house });
+    setEditingId("new");
+  };
+  const openEditSku = (r: PrintHouseSku) => {
+    setSkuDraft({ ...r });
+    setEditingId(r.id);
+  };
+
+  const saveSku = async () => {
+    const brand = (skuDraft.brand || "").trim();
+    const variantId = (skuDraft.variantId || "").trim();
+    if (!house) return message.warning("Chọn nhà in trước");
+    if (!brand) return message.warning('Nhập "Brand (Sản phẩm)"');
+    if (!variantId) return message.warning('Nhập "Variant ID"');
+    const color = (skuDraft.color || "").trim();
+    const size = (skuDraft.size || "").trim();
+    // Không cho trùng Brand + Color + Size trong cùng nhà in
+    const dup = phSkus.find(
+      (r) =>
+        r.id !== editingId &&
+        skuKeyOf(r.printHouse, r.brand, r.color, r.size) ===
+          skuKeyOf(house, brand, color, size)
+    );
+    if (dup)
+      return message.warning(
+        `Đã có dòng ${brand} ${color} ${size} cho nhà in "${house}"`
+      );
+    setSaving(true);
+    try {
+      await sbUpsert("printHouseSkus", [
+        {
+          id: editingId && editingId !== "new" ? editingId : genId(),
+          printHouse: house,
+          brand,
+          color,
+          size,
+          variantId,
+          productName: (skuDraft.productName || "").trim(),
+          style: (skuDraft.style || "").trim(),
+          created: skuDraft.created || new Date().toISOString(),
+        },
+      ]);
+      qc.invalidateQueries(["adm-ph-skus"]);
+      message.success(
+        editingId === "new" ? "Đã thêm dòng SKU" : "Đã lưu dòng SKU"
+      );
+      setEditingId(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   useEffect(() => {
     if (!house && printHouses.length) setHouse(printHouses[0].name);
   }, [printHouses, house]);
@@ -500,6 +559,15 @@ function PrintHouseSkuManager() {
           />
         </div>
         <Button
+          type="primary"
+          className="bg-[#171826]"
+          icon={<FiPlus />}
+          disabled={!house}
+          onClick={openNewSku}
+        >
+          Thêm SKU
+        </Button>
+        <Button
           icon={<FiUpload />}
           loading={!!importing}
           disabled={!house}
@@ -610,7 +678,15 @@ function PrintHouseSkuManager() {
                 <td className="p-2.5 text-xs text-gray-500 max-w-[240px] truncate">
                   {[r.productName, r.style].filter(Boolean).join(" · ") || "—"}
                 </td>
-                <td className="p-2.5">
+                <td className="p-2.5 whitespace-nowrap">
+                  <Tooltip title="Sửa dòng SKU">
+                    <button
+                      onClick={() => openEditSku(r)}
+                      className="w-7 h-7 rounded-md border border-[#EADFC8] bg-[#FBF6EC] text-[#B79351] inline-flex items-center justify-center cursor-pointer hover:bg-[#C6A15B] hover:text-white mr-1.5"
+                    >
+                      <FiEdit3 size={13} />
+                    </button>
+                  </Tooltip>
                   <Popconfirm
                     title="Xóa dòng SKU này?"
                     okText="Xóa"
@@ -655,6 +731,102 @@ function PrintHouseSkuManager() {
             />
           </div>
         )}
+
+      {/* Thêm / sửa 1 dòng SKU */}
+      <Modal
+        open={!!editingId}
+        width={620}
+        title={
+          editingId === "new"
+            ? `Thêm SKU cho nhà in "${house}"`
+            : `Sửa SKU — ${skuDraft.brand || ""}`
+        }
+        okText="Lưu"
+        cancelText="Hủy"
+        confirmLoading={saving}
+        onOk={saveSku}
+        onCancel={() => setEditingId(null)}
+      >
+        <div className="grid grid-cols-2 gap-3 pt-2">
+          <div>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              BRAND (SẢN PHẨM) *
+            </div>
+            <Input
+              autoFocus
+              placeholder="Vd: Hoodie"
+              value={skuDraft.brand || ""}
+              onChange={(e) =>
+                setSkuDraft((d) => ({ ...d, brand: e.target.value }))
+              }
+            />
+          </div>
+          <div>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              VARIANT ID *
+            </div>
+            <Input
+              placeholder="Vd: A2KG18500MEDFOR"
+              value={skuDraft.variantId || ""}
+              onChange={(e) =>
+                setSkuDraft((d) => ({ ...d, variantId: e.target.value }))
+              }
+            />
+          </div>
+          <div>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              COLOR
+            </div>
+            <Input
+              placeholder="Vd: Forest"
+              value={skuDraft.color || ""}
+              onChange={(e) =>
+                setSkuDraft((d) => ({ ...d, color: e.target.value }))
+              }
+            />
+          </div>
+          <div>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              SIZE
+            </div>
+            <Input
+              placeholder="Vd: M"
+              value={skuDraft.size || ""}
+              onChange={(e) =>
+                setSkuDraft((d) => ({ ...d, size: e.target.value }))
+              }
+            />
+          </div>
+          <div>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              PRODUCT NAME
+            </div>
+            <Input
+              placeholder="Vd: G18500 Gildan Unisex Heavy Blend Hoodie"
+              value={skuDraft.productName || ""}
+              onChange={(e) =>
+                setSkuDraft((d) => ({ ...d, productName: e.target.value }))
+              }
+            />
+          </div>
+          <div>
+            <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+              STYLE
+            </div>
+            <Input
+              placeholder="Vd: G18500"
+              value={skuDraft.style || ""}
+              onChange={(e) =>
+                setSkuDraft((d) => ({ ...d, style: e.target.value }))
+              }
+            />
+          </div>
+        </div>
+        <p className="text-xs text-gray-400 mt-3 mb-0">
+          Mỗi nhà in không được trùng Brand + Color + Size. Variant ID dùng để
+          tra mã khi xuất đơn cho nhà in.
+        </p>
+      </Modal>
       </div>
     </div>
   );

@@ -5,10 +5,12 @@
  * Import CSV (upsert theo Sản phẩm + Màu + Size) và Export CSV cùng định dạng.
  */
 import {
+  AutoComplete,
   Button,
   Checkbox,
   Input,
   InputNumber,
+  Modal,
   Pagination,
   Popconfirm,
   Segmented,
@@ -22,11 +24,16 @@ import {
   FiChevronDown,
   FiChevronRight,
   FiDownload,
+  FiEdit3,
   FiPlus,
   FiTrash2,
   FiUpload,
 } from "react-icons/fi";
-import { usePodVariantMutations, usePodVariants } from "../../hooks/useAdmin";
+import {
+  usePodVariantMutations,
+  usePodVariants,
+  usePrintHouses,
+} from "../../hooks/useAdmin";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import { sbUpsert } from "../../lib/supabase";
 import { PodVariant } from "../../models/admin";
@@ -46,8 +53,27 @@ const CSV_HEADERS = [
   "Giá Teement",
 ];
 
-// Cột số: field -> label hiển thị
-const NUM_COLS: { field: keyof PodVariant; label: string }[] = [
+/**
+ * 1 cột giá trong bảng. `house` có giá trị = cột giá riêng của nhà in đó,
+ * lưu trong podVariants.housePrices["<tên nhà in>"] thay vì 1 field cố định.
+ */
+export type NumCol = { field: string; label: string; house?: string };
+
+/** Đọc giá của 1 ô theo cột */
+export function colValue(v: PodVariant, col: NumCol): number {
+  if (col.house) return Number((v.housePrices || {})[col.house]) || 0;
+  return Number((v as any)[col.field]) || 0;
+}
+
+/** Patch để lưu giá của 1 ô theo cột */
+export function colPatch(v: PodVariant, col: NumCol, val: number): any {
+  if (col.house)
+    return { housePrices: { ...(v.housePrices || {}), [col.house]: val } };
+  return { [col.field]: val };
+}
+
+// Cột số cố định: field -> label hiển thị
+const NUM_COLS: NumCol[] = [
   { field: "price", label: "Giá" },
   { field: "shipPrice", label: "Giá ship" },
   { field: "printOneSide", label: "In 1 mặt" },
@@ -59,7 +85,7 @@ const NUM_COLS: { field: keyof PodVariant; label: string }[] = [
 ];
 
 // Các cột cần so sánh chênh lệch với Giá Teement (hiện dấu +/- bên dưới ô nhập)
-const DIFF_FIELDS: (keyof PodVariant)[] = [
+const DIFF_FIELDS: string[] = [
   "priceAK2",
   "priceFashship",
   "price3D",
@@ -125,26 +151,28 @@ const keyOf = (p?: string, c?: string, s?: string) =>
  */
 function VariantRow({
   v,
+  cols,
   inGroup,
   hideColor,
   selected,
   onToggleSelect,
   onSaveField,
+  onEdit,
   onDelete,
 }: {
   v: PodVariant;
+  cols: NumCol[];
   inGroup: boolean;
   hideColor: boolean;
   selected: boolean;
   onToggleSelect: (checked: boolean) => void;
-  onSaveField: (field: keyof PodVariant, val: number) => void;
+  onSaveField: (col: NumCol, val: number) => void;
+  onEdit: () => void;
   onDelete: () => void | Promise<void>;
 }) {
   const initVals = () => {
     const o: Record<string, number | null> = {};
-    NUM_COLS.forEach(
-      ({ field }) => (o[field as string] = Number((v as any)[field]) || 0)
-    );
+    cols.forEach((c) => (o[c.field] = colValue(v, c)));
     return o;
   };
   const [vals, setVals] = useState<Record<string, number | null>>(initVals);
@@ -161,6 +189,8 @@ function VariantRow({
     v.priceFashship,
     v.price3D,
     v.priceTeement,
+    v.housePrices,
+    cols,
   ]);
 
   const teement = Number(vals.priceTeement) || 0;
@@ -190,14 +220,20 @@ function VariantRow({
       <td className={`p-2.5 ${hideColor ? "pl-8 text-gray-500" : ""}`}>
         {v.size || "—"}
       </td>
-      {NUM_COLS.map(({ field }) => {
-        const key = field as string;
+      {cols.map((col) => {
+        const key = col.field;
         const cur = Number(vals[key]) || 0;
-        const saved = Number((v as any)[field]) || 0;
-        const showDiff = DIFF_FIELDS.includes(field) && cur > 0;
+        const saved = colValue(v, col);
+        const showDiff =
+          (!!col.house || DIFF_FIELDS.includes(col.field)) && cur > 0;
         const diff = teement - cur; // Giá Teement − giá nhập
         return (
-          <td key={key} className="p-1.5 text-right align-top">
+          <td
+            key={key}
+            className={`p-1.5 text-right align-top ${
+              col.house ? "bg-[#F7F8FF]" : ""
+            }`}
+          >
             <InputNumber
               size="small"
               min={0}
@@ -209,7 +245,7 @@ function VariantRow({
                 setVals((s) => ({ ...s, [key]: (n as number) ?? null }))
               }
               onBlur={() => {
-                if (cur !== saved) onSaveField(field, cur);
+                if (cur !== saved) onSaveField(col, cur);
               }}
             />
             {showDiff && (
@@ -243,7 +279,15 @@ function VariantRow({
           </td>
         );
       })}
-      <td className="p-2.5">
+      <td className="p-2.5 whitespace-nowrap">
+        <Tooltip title="Sửa biến thể — thêm/xoá cột giá nhà in">
+          <button
+            onClick={onEdit}
+            className="w-7 h-7 rounded-md border border-[#EADFC8] bg-[#FBF6EC] text-[#B79351] inline-flex items-center justify-center cursor-pointer hover:bg-[#C6A15B] hover:text-white mr-1.5"
+          >
+            <FiEdit3 size={13} />
+          </button>
+        </Tooltip>
         <Popconfirm
           title={`Xóa ${v.product} ${v.color || ""} ${v.size || ""}?`}
           okText="Xóa"
@@ -263,7 +307,49 @@ function VariantRow({
 export default function VariantPrices() {
   const { variants } = usePodVariants();
   const { update, removeMany } = usePodVariantMutations();
+  const { printHouses } = usePrintHouses();
   const qc = useQueryClient();
+
+  /* --------- Cột giá theo NHÀ IN ---------
+   * Lấy từ tab Nhà In; cộng thêm những nhà in đã có giá trong dữ liệu
+   * (phòng khi nhà in bị xoá khỏi danh mục mà giá vẫn còn). */
+  const houseNames = useMemo(() => {
+    const set = new Set<string>();
+    variants.forEach((v) =>
+      Object.keys(v.housePrices || {}).forEach((k) => k.trim() && set.add(k))
+    );
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [variants]);
+
+  const cols: NumCol[] = useMemo(
+    () => [
+      ...NUM_COLS,
+      ...houseNames.map((n) => ({
+        field: `house:${n}`,
+        label: `Giá ${n}`,
+        house: n,
+      })),
+    ],
+    [houseNames]
+  );
+
+  /** Xoá hẳn 1 cột giá nhà in (gỡ khỏi mọi biến thể đang có giá đó) */
+  const removeHouseColumn = async (house: string) => {
+    const affected = variants.filter((v) => (v.housePrices || {})[house] !== undefined);
+    if (!affected.length) return;
+    const CHUNK = 400;
+    for (let i = 0; i < affected.length; i += CHUNK) {
+      await sbUpsert(
+        "podVariants",
+        affected.slice(i, i + CHUNK).map((v) => {
+          const { [house]: _drop, ...rest } = v.housePrices || {};
+          return { ...v, housePrices: rest };
+        })
+      );
+    }
+    qc.invalidateQueries(["adm-variants"]);
+    message.success(`Đã xoá cột "Giá ${house}" khỏi ${affected.length} biến thể`);
+  };
 
   const [filterProduct, setFilterProduct] = useState("");
   const [search, setSearch] = useState("");
@@ -279,6 +365,61 @@ export default function VariantPrices() {
   } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [draft, setDraft] = useState<Partial<PodVariant>>({});
+  /** Cột giá nhà in thêm kèm khi tạo biến thể mới */
+  const [draftHouses, setDraftHouses] = useState<
+    { name: string; value: number }[]
+  >([]);
+  /** Biến thể đang sửa trong modal + bản nháp của nó */
+  const [editing, setEditing] = useState<PodVariant | null>(null);
+  const [editDraft, setEditDraft] = useState<Partial<PodVariant>>({});
+  const [editHouses, setEditHouses] = useState<
+    { name: string; value: number }[]
+  >([]);
+
+  // Gợi ý tên nhà in: danh mục Nhà In + những nhà in đã có cột giá
+  const houseOptions = useMemo(() => {
+    const set = new Set<string>();
+    printHouses.forEach((h) => h.name?.trim() && set.add(h.name.trim()));
+    houseNames.forEach((n) => set.add(n));
+    return Array.from(set).sort().map((v) => ({ value: v }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printHouses, houseNames]);
+
+  const openEdit = (v: PodVariant) => {
+    setEditing(v);
+    setEditDraft({ ...v });
+    setEditHouses(
+      Object.entries(v.housePrices || {}).map(([name, value]) => ({
+        name,
+        value: Number(value) || 0,
+      }))
+    );
+  };
+
+  /** Gom danh sách {tên, giá} thành object housePrices (bỏ dòng thiếu tên) */
+  const toHousePrices = (list: { name: string; value: number }[]) =>
+    list.reduce((acc, h) => {
+      const n = h.name.trim();
+      if (n) acc[n] = Number(h.value) || 0;
+      return acc;
+    }, {} as Record<string, number>);
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    await update.mutateAsync({
+      id: editing.id,
+      product: (editDraft.product || "").trim() || editing.product,
+      color: (editDraft.color || "").trim(),
+      size: (editDraft.size || "").trim(),
+      ...NUM_COLS.reduce((acc, c) => {
+        acc[c.field] = Number((editDraft as any)[c.field]) || 0;
+        return acc;
+      }, {} as any),
+      housePrices: toHousePrices(editHouses),
+    } as any);
+    message.success("Đã lưu biến thể");
+    setEditing(null);
+  };
   const fileRef = useRef<HTMLInputElement>(null);
 
   const productNames = useMemo(
@@ -366,28 +507,26 @@ export default function VariantPrices() {
   };
 
   // Giá trị chung của 1 cột trong nhóm: number nếu tất cả bằng nhau, null nếu lệch
-  const groupCommon = (rows: PodVariant[], field: keyof PodVariant) => {
-    const vals = rows.map((r) => (Number((r as any)[field]) || 0));
+  const groupCommon = (rows: PodVariant[], col: NumCol) => {
+    const vals = rows.map((r) => colValue(r, col));
     return vals.every((x) => x === vals[0]) ? vals[0] : null;
   };
 
   // Sửa 1 cột giá cho CẢ nhóm (áp cho mọi biến thể) — upsert theo lô
   const applyGroupField = async (
     rows: PodVariant[],
-    field: keyof PodVariant,
+    col: NumCol,
     val: number
   ) => {
-    const changed = rows.filter(
-      (r) => (Number((r as any)[field]) || 0) !== val
-    );
+    const changed = rows.filter((r) => colValue(r, col) !== val);
     if (!changed.length) return;
     await sbUpsert(
       "podVariants",
-      changed.map((r) => ({ ...r, [field]: val }))
+      changed.map((r) => ({ ...r, ...colPatch(r, col, val) }))
     );
     qc.invalidateQueries(["adm-variants"]);
     message.success(
-      `Đã đặt ${field} = ${val} cho ${changed.length} biến thể "${rows[0].product}"`
+      `Đã đặt ${col.label} = ${val} cho ${changed.length} biến thể "${rows[0].product}"`
     );
   };
 
@@ -425,6 +564,13 @@ export default function VariantPrices() {
         priceFashship: num(r["Giá Fashship"]),
         price3D: num(r["Giá 3D"]),
         priceTeement: num(r["Giá Teement"]),
+        // Cột giá nhà in trong file: "Giá <tên nhà in>" — chỉ nhận nhà in đã có
+        housePrices: houseNames.reduce((acc, n) => {
+          const raw = r[`Giá ${n}`];
+          if (raw !== undefined && String(raw).trim() !== "")
+            acc[n] = num(raw);
+          return acc;
+        }, {} as Record<string, number>),
         created: now,
       });
     }
@@ -450,10 +596,11 @@ export default function VariantPrices() {
   /* ---------- Export: đúng định dạng file gốc ---------- */
   const handleExport = () => {
     const list = filtered;
+    // Cột giá nhà in nối thêm sau các cột gốc, tên cột = "Giá <nhà in>"
     downloadCSV(
       "gia-san-pham-teement.csv",
       toCSV(
-        CSV_HEADERS,
+        [...CSV_HEADERS, ...houseNames.map((n) => `Giá ${n}`)],
         list.map((v) => [
           v.product || "",
           v.color || "",
@@ -466,14 +613,15 @@ export default function VariantPrices() {
           v.priceFashship || "",
           v.price3D || "",
           v.priceTeement ?? 0,
+          ...houseNames.map((n) => (v.housePrices || {})[n] || ""),
         ])
       )
     );
     message.success(`Đã xuất ${list.length} dòng`);
   };
 
-  const saveField = (v: PodVariant, field: string, value: any) => {
-    update.mutate({ id: v.id, [field]: value } as any);
+  const saveField = (v: PodVariant, col: NumCol, value: number) => {
+    update.mutate({ id: v.id, ...colPatch(v, col, value) } as any);
   };
 
   const addRow = async () => {
@@ -496,12 +644,14 @@ export default function VariantPrices() {
         priceFashship: draft.priceFashship || 0,
         price3D: draft.price3D || 0,
         priceTeement: draft.priceTeement || 0,
+        housePrices: toHousePrices(draftHouses),
         created: new Date().toISOString(),
       },
     ]);
     qc.invalidateQueries(["adm-variants"]);
     message.success(`Đã thêm ${product} ${draft.color || ""} ${draft.size || ""}`);
     setDraft({});
+    setDraftHouses([]);
     setAddOpen(false);
   };
 
@@ -535,7 +685,9 @@ export default function VariantPrices() {
           checked ? [...prev, v.id] : prev.filter((x) => x !== v.id)
         )
       }
-      onSaveField={(field, val) => saveField(v, field, val)}
+      cols={cols}
+      onSaveField={(col, val) => saveField(v, col, val)}
+      onEdit={() => openEdit(v)}
       onDelete={async () => {
         await removeMany.mutateAsync([v.id] as any);
         message.success("Đã xóa biến thể");
@@ -583,10 +735,14 @@ export default function VariantPrices() {
         </td>
         <td className="p-2.5 text-gray-500">{colorList.length} màu</td>
         <td className="p-2.5 text-gray-500">{sizes.size} size</td>
-        {NUM_COLS.map(({ field, label }) => {
-          const common = groupCommon(g.rows, field);
+        {cols.map((col) => {
+          const { field, label } = col;
+          const common = groupCommon(g.rows, col);
           return (
-            <td key={field as string} className="p-1.5 text-right">
+            <td
+              key={field}
+              className={`p-1.5 text-right ${col.house ? "bg-[#F7F8FF]" : ""}`}
+            >
               <Tooltip
                 title={
                   common === null
@@ -595,7 +751,7 @@ export default function VariantPrices() {
                 }
               >
                 <InputNumber
-                  key={`${g.product}-${field as string}-${common}`}
+                  key={`${g.product}-${field}-${common}`}
                   size="small"
                   min={0}
                   step={0.01}
@@ -613,7 +769,7 @@ export default function VariantPrices() {
                     if (raw === "") return;
                     const val = parseFloat(raw) || 0;
                     if (common === null || val !== common)
-                      applyGroupField(g.rows, field, val);
+                      applyGroupField(g.rows, col, val);
                   }}
                 />
               </Tooltip>
@@ -676,10 +832,14 @@ export default function VariantPrices() {
             <span className="line-clamp-1">{sizeText}</span>
           </Tooltip>
         </td>
-        {NUM_COLS.map(({ field, label }) => {
-          const common = groupCommon(rows, field);
+        {cols.map((col) => {
+          const { field, label } = col;
+          const common = groupCommon(rows, col);
           return (
-            <td key={field as string} className="p-1.5 text-right">
+            <td
+              key={field}
+              className={`p-1.5 text-right ${col.house ? "bg-[#F7F8FF]" : ""}`}
+            >
               <Tooltip
                 title={
                   common === null
@@ -688,7 +848,7 @@ export default function VariantPrices() {
                 }
               >
                 <InputNumber
-                  key={`${ckey}-${field as string}-${common}`}
+                  key={`${ckey}-${field}-${common}`}
                   size="small"
                   min={0}
                   step={0.01}
@@ -706,7 +866,7 @@ export default function VariantPrices() {
                     if (raw === "") return;
                     const val = parseFloat(raw) || 0;
                     if (common === null || val !== common)
-                      applyGroupField(rows, field, val);
+                      applyGroupField(rows, col, val);
                   }}
                 />
               </Tooltip>
@@ -850,11 +1010,205 @@ export default function VariantPrices() {
               />
             </div>
           ))}
+          {draftHouses.map((h, i) => (
+            <div key={i}>
+              <div className="text-[9px] text-gray-400 mb-0.5 flex items-center gap-1">
+                CỘT GIÁ NHÀ IN
+                <button
+                  title="Bỏ cột này"
+                  onClick={() =>
+                    setDraftHouses((list) => list.filter((_, k) => k !== i))
+                  }
+                  className="border-0 bg-transparent text-gray-400 hover:text-red-500 cursor-pointer p-0 leading-none"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="flex gap-1">
+                <AutoComplete
+                  className="w-[130px]"
+                  placeholder="Tên nhà in"
+                  value={h.name}
+                  options={houseOptions}
+                  filterOption={(input, opt) =>
+                    String(opt?.value || "")
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
+                  onChange={(v) =>
+                    setDraftHouses((list) =>
+                      list.map((x, k) => (k === i ? { ...x, name: v || "" } : x))
+                    )
+                  }
+                />
+                <InputNumber
+                  className="w-[86px]"
+                  min={0}
+                  step={0.01}
+                  value={h.value}
+                  onChange={(v) =>
+                    setDraftHouses((list) =>
+                      list.map((x, k) =>
+                        k === i ? { ...x, value: (v as number) || 0 } : x
+                      )
+                    )
+                  }
+                />
+              </div>
+            </div>
+          ))}
+          <Tooltip title="Thêm 1 cột giá cho nhà in — gõ tên mới hoặc chọn nhà in đã có">
+            <Button
+              icon={<FiPlus />}
+              onClick={() =>
+                setDraftHouses((list) => [...list, { name: "", value: 0 }])
+              }
+            >
+              Cột giá nhà in
+            </Button>
+          </Tooltip>
           <Button type="primary" className="bg-[#171826]" onClick={addRow}>
             Lưu
           </Button>
         </div>
       )}
+
+      {/* Modal sửa 1 biến thể — thêm/xoá cột giá nhà in ngay tại đây */}
+      <Modal
+        open={!!editing}
+        width={720}
+        title={`Sửa biến thể ${editing?.product || ""}`}
+        okText="Lưu"
+        cancelText="Hủy"
+        onOk={saveEdit}
+        confirmLoading={update.isLoading}
+        onCancel={() => setEditing(null)}
+      >
+        {editing && (
+          <div className="space-y-4 pt-2">
+            <div className="flex gap-2 flex-wrap">
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">SẢN PHẨM</div>
+                <Input
+                  className="w-[220px]"
+                  value={editDraft.product || ""}
+                  onChange={(e) =>
+                    setEditDraft((d) => ({ ...d, product: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">MÀU</div>
+                <Input
+                  className="w-[160px]"
+                  value={editDraft.color || ""}
+                  onChange={(e) =>
+                    setEditDraft((d) => ({ ...d, color: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">SIZE</div>
+                <Input
+                  className="w-[90px]"
+                  value={editDraft.size || ""}
+                  onChange={(e) =>
+                    setEditDraft((d) => ({ ...d, size: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              {NUM_COLS.map((c) => (
+                <div key={c.field}>
+                  <div className="text-[10px] text-gray-400 mb-1">
+                    {c.label}
+                  </div>
+                  <InputNumber
+                    className="w-[100px]"
+                    min={0}
+                    step={0.01}
+                    value={(editDraft as any)[c.field]}
+                    onChange={(v) =>
+                      setEditDraft((d) => ({ ...d, [c.field]: v ?? 0 }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-gray-100 pt-3">
+              <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-2">
+                CỘT GIÁ NHÀ IN
+              </div>
+              <div className="space-y-2">
+                {editHouses.map((h, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <AutoComplete
+                      className="w-[220px]"
+                      placeholder="Tên nhà in"
+                      value={h.name}
+                      options={houseOptions}
+                      filterOption={(input, opt) =>
+                        String(opt?.value || "")
+                          .toLowerCase()
+                          .includes(input.toLowerCase())
+                      }
+                      onChange={(v) =>
+                        setEditHouses((list) =>
+                          list.map((x, k) =>
+                            k === i ? { ...x, name: v || "" } : x
+                          )
+                        )
+                      }
+                    />
+                    <InputNumber
+                      className="w-[120px]"
+                      min={0}
+                      step={0.01}
+                      value={h.value}
+                      onChange={(v) =>
+                        setEditHouses((list) =>
+                          list.map((x, k) =>
+                            k === i ? { ...x, value: (v as number) || 0 } : x
+                          )
+                        )
+                      }
+                    />
+                    <Tooltip title="Xoá cột giá này khỏi biến thể">
+                      <button
+                        onClick={() =>
+                          setEditHouses((list) =>
+                            list.filter((_, k) => k !== i)
+                          )
+                        }
+                        className="w-8 h-8 rounded-md border border-red-100 bg-red-50 text-red-500 inline-flex items-center justify-center cursor-pointer hover:bg-red-500 hover:text-white"
+                      >
+                        <FiTrash2 size={13} />
+                      </button>
+                    </Tooltip>
+                  </div>
+                ))}
+                {!editHouses.length && (
+                  <div className="text-gray-400 text-sm italic">
+                    Chưa có cột giá nhà in nào cho biến thể này
+                  </div>
+                )}
+              </div>
+              <Button
+                className="mt-2"
+                icon={<FiPlus />}
+                onClick={() =>
+                  setEditHouses((list) => [...list, { name: "", value: 0 }])
+                }
+              >
+                Thêm cột giá nhà in
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Bảng biến thể */}
       <div className="border border-gray-200 rounded-xl overflow-x-auto bg-white mt-3">
@@ -880,9 +1234,37 @@ export default function VariantPrices() {
               <th className="p-2.5 font-medium">Sản Phẩm</th>
               <th className="p-2.5 font-medium">Màu</th>
               <th className="p-2.5 font-medium">Size</th>
-              {NUM_COLS.map((c) => (
-                <th key={c.field} className="p-2.5 font-medium text-right">
-                  {c.label}
+              {cols.map((c) => (
+                <th
+                  key={c.field}
+                  className={`p-2.5 font-medium text-right ${
+                    c.house ? "text-[#4338CA] bg-[#F7F8FF]" : ""
+                  }`}
+                >
+                  {c.house ? (
+                    <span className="inline-flex items-center gap-1">
+                      <Tooltip title={`Giá riêng của nhà in "${c.house}"`}>
+                        <span className="cursor-help">{c.label}</span>
+                      </Tooltip>
+                      <Popconfirm
+                        title={`Xoá cột "Giá ${c.house}"?`}
+                        description="Gỡ giá của nhà in này khỏi tất cả biến thể."
+                        okText="Xoá cột"
+                        cancelText="Hủy"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => removeHouseColumn(c.house as string)}
+                      >
+                        <button
+                          title="Xoá cột giá này"
+                          className="w-4 h-4 rounded-full border-0 bg-transparent text-gray-400 hover:text-red-500 cursor-pointer leading-none p-0"
+                        >
+                          ×
+                        </button>
+                      </Popconfirm>
+                    </span>
+                  ) : (
+                    c.label
+                  )}
                 </th>
               ))}
               <th className="p-2.5 font-medium w-14"></th>

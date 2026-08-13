@@ -14,15 +14,18 @@ import { FiClock, FiRotateCcw } from "react-icons/fi";
 import UploadImgButton from "../../components/UploadImgButton";
 import { imageUrlCandidates } from "../../lib/imageUrl";
 import {
+  nextEmployeeCode,
   useCsEmployeeMutations,
   useCsEmployees,
   useOrderMutations,
   useOrders,
+  usePendingOrderIdMutations,
+  usePendingOrderIds,
   useSellers,
   useStores,
 } from "../../hooks/useAdmin";
 import { useAdminUser } from "../../hooks/useAdminAuth";
-import { PodOrder } from "../../models/admin";
+import { PendingOrderId, PodOrder } from "../../models/admin";
 
 const CS_STATUS: Record<string, { label: string; color: string; bg: string }> = {
   "": { label: "Chưa xử lý", color: "#B91C1C", bg: "#FDECEC" },
@@ -118,10 +121,93 @@ export default function OrderCare() {
       setNewEmp("");
       return;
     }
-    await csEmpMut.add.mutateAsync({ name, created: new Date().toISOString() });
-    message.success(`Đã tạo nhân viên "${name}"`);
+    const code = nextEmployeeCode(employees);
+    await csEmpMut.add.mutateAsync({
+      name,
+      code,
+      created: new Date().toISOString(),
+    });
+    message.success(`Đã tạo nhân viên "${name}" — mã ${code}`);
     setNewEmp("");
   };
+
+  // Nhân viên cũ chưa có mã -> cấp mã tự động (chạy 1 lần cho mỗi người)
+  useEffect(() => {
+    const missing = employees.filter((e) => !String(e.code || "").trim());
+    if (!missing.length) return;
+    let seq = employees.reduce((m, e) => {
+      const n = Number(String(e.code || "").replace(/\D/g, ""));
+      return Number.isFinite(n) && n > m ? n : m;
+    }, 0);
+    missing.forEach((e) => {
+      seq += 1;
+      csEmpMut.update.mutate({
+        id: e.id,
+        code: `NV${String(seq).padStart(3, "0")}`,
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employees]);
+
+  /* -------- "Add ID": mã đơn khách gửi trước khi đơn được úp lên -------- */
+  const { pendingIds } = usePendingOrderIds();
+  const pendingMut = usePendingOrderIdMutations();
+  const [newPendingId, setNewPendingId] = useState("");
+  const [newPendingNote, setNewPendingNote] = useState("");
+
+  const addPendingId = async () => {
+    const code = newPendingId.trim();
+    if (!code) return;
+    if (
+      pendingIds.some(
+        (p) => p.orderCode.trim().toLowerCase() === code.toLowerCase()
+      )
+    ) {
+      message.warning("ID này đã được add rồi");
+      return;
+    }
+    await pendingMut.add.mutateAsync({
+      orderCode: code,
+      note: newPendingNote.trim(),
+      createdBy: reviewer,
+      created: new Date().toISOString(),
+      matchedOrderId: "",
+      matchedAt: "",
+      ackAt: "",
+    });
+    message.success(`Đã add ID "${code}" — sẽ báo khi đơn thật xuất hiện`);
+    setNewPendingId("");
+    setNewPendingNote("");
+  };
+
+  // Mã đơn (viết thường) -> bản ghi ID đã add, để gắn badge lên dòng đơn
+  const pendingByCode = useMemo(() => {
+    const m = new Map<string, PendingOrderId>();
+    pendingIds.forEach((p) =>
+      m.set(String(p.orderCode || "").trim().toLowerCase(), p)
+    );
+    return m;
+  }, [pendingIds]);
+
+  // Đơn thật xuất hiện với ID đã add trước -> ghi nhận thời điểm khớp 1 lần
+  useEffect(() => {
+    if (!orders.length || !pendingIds.length) return;
+    const codes = new Map(
+      orders.map((o) => [String(o.orderCode || "").trim().toLowerCase(), o])
+    );
+    pendingIds
+      .filter((p) => !p.matchedOrderId)
+      .forEach((p) => {
+        const hit = codes.get(String(p.orderCode || "").trim().toLowerCase());
+        if (hit)
+          pendingMut.update.mutate({
+            id: p.id,
+            matchedOrderId: hit.id,
+            matchedAt: new Date().toISOString(),
+          });
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, pendingIds]);
 
   const [statusTab, setStatusTab] = useState("all");
   const [search, setSearch] = useState("");
@@ -294,6 +380,11 @@ export default function OrderCare() {
                 className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded-full pl-2.5 pr-1 py-0.5"
               >
                 {e.name}
+                {e.code && (
+                  <span className="font-mono text-[10px] text-[#4338CA]">
+                    ({e.code})
+                  </span>
+                )}
                 <Popconfirm
                   title={`Xóa nhân viên "${e.name}"?`}
                   okText="Xóa"
@@ -306,6 +397,93 @@ export default function OrderCare() {
                 </Popconfirm>
               </span>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Add ID: mã đơn khách gửi TRƯỚC khi đơn được úp lên hệ thống */}
+      <div className="bg-white rounded-2xl border border-gray-100 p-4 space-y-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[13px] font-semibold text-[#171826]">
+            Add ID:
+          </span>
+          <Input
+            placeholder="Mã đơn khách gửi trước..."
+            className="w-[220px]"
+            value={newPendingId}
+            onChange={(e) => setNewPendingId(e.target.value)}
+            onPressEnter={addPendingId}
+          />
+          <Input
+            placeholder="Ghi chú (không bắt buộc)..."
+            className="w-[260px]"
+            value={newPendingNote}
+            onChange={(e) => setNewPendingNote(e.target.value)}
+            onPressEnter={addPendingId}
+          />
+          <Button
+            type="primary"
+            className="bg-[#171826] border-0 font-bold"
+            loading={pendingMut.add.isLoading}
+            onClick={addPendingId}
+          >
+            + Thêm ID
+          </Button>
+          <span className="text-xs text-gray-400">
+            Khách báo mã đơn trước khi úp lên — khi đơn thật có mã này vào hệ
+            thống, dòng đơn sẽ hiện badge đỏ để kiểm tra lại.
+          </span>
+        </div>
+        {pendingIds.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-gray-400">Đã add:</span>
+            {pendingIds.map((p) => {
+              const matched = !!p.matchedOrderId;
+              return (
+                <Tooltip
+                  key={p.id}
+                  title={
+                    <div className="text-xs leading-5">
+                      {p.note && <div>Ghi chú: {p.note}</div>}
+                      <div>
+                        Thêm bởi {p.createdBy || "—"}
+                        {p.created
+                          ? ` · ${dayjs(p.created).format("DD/MM/YYYY HH:mm")}`
+                          : ""}
+                      </div>
+                      <div>
+                        {matched
+                          ? `Đã có đơn thật lúc ${dayjs(p.matchedAt).format(
+                              "DD/MM/YYYY HH:mm"
+                            )}`
+                          : "Chưa có đơn thật với mã này"}
+                      </div>
+                    </div>
+                  }
+                >
+                  <span
+                    className={`inline-flex items-center gap-1 text-xs rounded-full pl-2.5 pr-1 py-0.5 ${
+                      matched
+                        ? "bg-[#FDECEC] text-[#B91C1C] font-semibold"
+                        : "bg-gray-100 text-gray-600"
+                    }`}
+                  >
+                    {p.orderCode}
+                    {matched ? " · đã có đơn" : " · chờ"}
+                    <Popconfirm
+                      title={`Xoá ID "${p.orderCode}" khỏi danh sách?`}
+                      okText="Xoá"
+                      cancelText="Hủy"
+                      onConfirm={() => pendingMut.remove.mutate(p.id)}
+                    >
+                      <button className="w-4 h-4 rounded-full text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer leading-none">
+                        ×
+                      </button>
+                    </Popconfirm>
+                  </span>
+                </Tooltip>
+              );
+            })}
           </div>
         )}
       </div>
@@ -454,6 +632,55 @@ export default function OrderCare() {
                       <div className="text-xs text-gray-400">
                         {o.customerName || "—"}
                       </div>
+                      {/* Đơn trùng mã đã "Add ID" trước đó -> báo để kiểm tra */}
+                      {(() => {
+                        const p = pendingByCode.get(
+                          String(o.orderCode || "").trim().toLowerCase()
+                        );
+                        if (!p || p.ackAt) return null;
+                        return (
+                          <Tooltip
+                            title={
+                              <div className="text-xs leading-5">
+                                Mã đơn này đã được add trước bởi{" "}
+                                {p.createdBy || "—"}
+                                {p.created
+                                  ? ` (${dayjs(p.created).format(
+                                      "DD/MM/YYYY HH:mm"
+                                    )})`
+                                  : ""}
+                                .
+                                {p.note && <div>Ghi chú: {p.note}</div>}
+                                <div>
+                                  Kiểm tra lại xem đơn có đổi ID hay không, rồi
+                                  bấm để tắt cảnh báo.
+                                </div>
+                              </div>
+                            }
+                          >
+                            <button
+                              onClick={() =>
+                                pendingMut.update.mutate(
+                                  {
+                                    id: p.id,
+                                    ackAt: new Date().toISOString(),
+                                  },
+                                  {
+                                    onSuccess: () => {
+                                      message.success(
+                                        `Đã xác nhận kiểm tra ID ${o.orderCode}`
+                                      );
+                                    },
+                                  }
+                                )
+                              }
+                              className="mt-1 inline-block text-[10px] font-bold rounded px-1.5 py-0.5 border-0 cursor-pointer bg-[#FDECEC] text-[#B91C1C]"
+                            >
+                              ID ĐÃ ADD TRƯỚC — KIỂM TRA
+                            </button>
+                          </Tooltip>
+                        );
+                      })()}
                     </td>
                     {/* Nhân viên xử lý: chọn nhiều từ danh sách; CHỌN RỒI thì
                         khóa lại (không cho sửa) — hiển thị dạng thẻ. */}

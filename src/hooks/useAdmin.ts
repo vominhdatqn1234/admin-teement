@@ -21,6 +21,8 @@ import {
   LedgerEntry,
   PodColor,
   PodOrder,
+  CsEmployee,
+  PendingOrderId,
   PodPrice,
   PodVariant,
   PrintHouseItem,
@@ -241,9 +243,31 @@ export function useCsEmployees() {
   const q = useQuery(["adm-cs-employees"], () =>
     getDocs(query(csEmployeesRef, orderBy("created", "desc")))
   );
-  return { ...q, employees: toList<{ id: string; name: string }>(q.data) };
+  return { ...q, employees: toList<CsEmployee>(q.data) };
+}
+
+/** Mã nhân viên kế tiếp theo dạng NV001, NV002... */
+export function nextEmployeeCode(employees: CsEmployee[]): string {
+  const max = employees.reduce((m, e) => {
+    const n = Number(String(e.code || "").replace(/\D/g, ""));
+    return Number.isFinite(n) && n > m ? n : m;
+  }, 0);
+  return `NV${String(max + 1).padStart(3, "0")}`;
 }
 export const useCsEmployeeMutations = crud(csEmployeesRef, "adm-cs-employees");
+
+/* ---------- "Add ID": mã đơn khách gửi trước khi đơn được úp lên ---------- */
+const pendingIdsRef = collection(db, "pendingOrderIds");
+export function usePendingOrderIds() {
+  const q = useQuery(["adm-pending-ids"], () =>
+    getDocs(query(pendingIdsRef, orderBy("created", "desc")))
+  );
+  return { ...q, pendingIds: toList<PendingOrderId>(q.data) };
+}
+export const usePendingOrderIdMutations = crud(
+  pendingIdsRef,
+  "adm-pending-ids"
+);
 
 /* ---------- Hàng đợi import PDF (seller gửi, chờ admin duyệt) ---------- */
 export function useImportQueue() {

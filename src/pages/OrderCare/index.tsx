@@ -469,6 +469,7 @@ export default function OrderCare() {
                     }`}
                   >
                     {p.orderCode}
+                    {p.note ? ` · ${p.note}` : ""}
                     {matched ? " · đã có đơn" : " · chờ"}
                     <Popconfirm
                       title={`Xoá ID "${p.orderCode}" khỏi danh sách?`}

@@ -14,7 +14,7 @@ import {
   message,
 } from "antd";
 import dayjs from "dayjs";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   FiDownload,
   FiCheck,
@@ -38,6 +38,8 @@ import {
   useOrderMutations,
   useOrders,
   useCsEmployees,
+  usePendingOrderIdMutations,
+  usePendingOrderIds,
   usePodColors,
   usePodVariants,
   usePrintHouses,
@@ -60,6 +62,7 @@ import {
   splitSizeFromColor,
   staffLabels,
 } from "../../models/admin";
+import UploadImgButton from "../../components/UploadImgButton";
 import { downloadCSV, parseCSV, toCSV } from "../../lib/csvPod";
 import {
   DESIGN_FIELDS,
@@ -68,7 +71,7 @@ import {
   factoryRowStyle,
   productNote,
 } from "../../lib/factoryExport";
-import { toDirectImageUrl } from "../../lib/imageUrl";
+import { imageUrlCandidates } from "../../lib/imageUrl";
 
 const STATUS_TABS = [
   { key: "pending_approval", label: "Đơn chờ duyệt" },
@@ -81,6 +84,278 @@ const STATUS_TABS = [
   { key: "all", label: "Tất cả đơn" },
 ];
 
+/**
+ * 1 ô link thiết kế: ảnh nhỏ (bấm xem lớn) + nhãn + ô dán link ngay dưới ảnh
+ * + nút upload ảnh. Dùng cho FRONT / BACK / MOCKUP trong bảng đơn.
+ */
+function DesignLinkCell({
+  label,
+  color,
+  value,
+  bg,
+  onCommit,
+}: {
+  label: string;
+  color: string;
+  value?: string;
+  /** Màu phôi để làm nền ảnh (vd Maroon) */
+  bg?: string;
+  onCommit: (v: string) => void;
+}) {
+  const [idx, setIdx] = useState(0);
+  const cands = value ? imageUrlCandidates(value) : [];
+  const src = idx < cands.length ? cands[idx] : "";
+  const bgStyle = bg ? { background: bg, borderColor: bg } : undefined;
+  const thumb = (
+    <span
+      style={bgStyle}
+      className={`w-10 h-10 shrink-0 rounded-md border border-gray-200 bg-gray-50 inline-flex items-center justify-center overflow-hidden ${
+        src ? "cursor-zoom-in" : ""
+      } ${bg ? "p-[2px]" : ""}`}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt={label}
+          referrerPolicy="no-referrer"
+          loading="lazy"
+          decoding="async"
+          className="w-full h-full object-contain rounded-[3px]"
+          onError={() => setIdx((i) => i + 1)}
+        />
+      ) : (
+        <span className="text-[7px] font-bold tracking-wider text-gray-300">
+          {label}
+        </span>
+      )}
+    </span>
+  );
+  return (
+    <div className="flex items-center gap-1.5 border border-gray-200 rounded-lg p-1.5 bg-white w-[210px]">
+      {src ? (
+        <Popover
+          placement="right"
+          content={
+            <div
+              style={bgStyle}
+              className={`w-[260px] h-[260px] flex items-center justify-center bg-gray-50 rounded-lg overflow-hidden ${
+                bg ? "p-2" : ""
+              }`}
+            >
+              <img
+                src={src}
+                alt={label}
+                referrerPolicy="no-referrer"
+                className="max-w-full max-h-full object-contain rounded"
+              />
+            </div>
+          }
+        >
+          {thumb}
+        </Popover>
+      ) : (
+        thumb
+      )}
+      <div className="flex-1 min-w-0">
+        <div
+          className="text-[9px] font-bold tracking-wider leading-none mb-0.5"
+          style={{ color }}
+        >
+          {label}
+        </div>
+        {/* input thuần (nhẹ hơn antd Input) — bảng có hàng trăm ô link */}
+        <input
+          key={value || ""}
+          defaultValue={value || ""}
+          placeholder="Dán link..."
+          className="w-full text-[11px] border-0 outline-none bg-transparent p-0 text-gray-600"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v !== (value || "")) onCommit(v);
+          }}
+        />
+      </div>
+      <UploadImgButton size="small" onUploaded={onCommit} />
+    </div>
+  );
+}
+
+/**
+ * Ô "Phôi Fulfill" của 1 sản phẩm: mặc định chỉ hiển thị (nhẹ, không tạo
+ * Select cho từng dòng -> bảng cuộn mượt). Bấm vào mới bung UI chỉnh sửa.
+ */
+const FulfillItemCell = memo(function FulfillItemCell({
+  it,
+  blankName,
+  productOptions,
+  colorOptions,
+  onPatch,
+}: {
+  it: any;
+  blankName: (sku?: string) => string;
+  /** Đã memo hoá ở component cha — tránh dựng lại danh sách mỗi lần gõ */
+  productOptions: { value: string; label: string }[];
+  colorOptions: { value: string }[];
+  onPatch: (patch: any) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+
+  if (!editing)
+    return (
+      <Tooltip title="Bấm để sửa phôi fulfill">
+        <div
+          onClick={() => setEditing(true)}
+          className="bg-[#F5F8FF] border border-[#DBE7FF] rounded-lg px-3 py-1.5 text-[12px] whitespace-nowrap cursor-pointer hover:border-[#2563EB]"
+        >
+          <span className="bg-[#DBE7FF] text-[#2563EB] font-bold rounded px-1.5 py-0.5 mr-2">
+            {it.quantity || 1}x
+          </span>
+          <span className="font-bold text-gray-800">
+            {blankName(it.productSku)}
+          </span>
+          {(it.color || it.size) && (
+            <span className="text-gray-400 italic">
+              {" "}
+              ({[it.color, it.size].filter(Boolean).join(" - ")})
+            </span>
+          )}
+        </div>
+      </Tooltip>
+    );
+
+  return (
+    <div className="bg-[#F5F8FF] border border-[#2563EB] rounded-lg p-1.5 flex items-center gap-1 flex-wrap w-[310px]">
+      <Tooltip title="Số lượng">
+        <InputNumber
+          size="small"
+          min={1}
+          controls={false}
+          className="w-[46px]"
+          value={it.quantity || 1}
+          onChange={(v) => {
+            const q = Number(v) || 1;
+            if (q !== (it.quantity || 1)) onPatch({ quantity: q });
+          }}
+        />
+      </Tooltip>
+      <Tooltip title="Phôi fulfill (Kho Phôi POD)">
+        <Select
+          size="small"
+          className="w-[125px]"
+          showSearch
+          autoFocus
+          placeholder="Chọn phôi..."
+          value={it.productSku || undefined}
+          options={productOptions}
+          listHeight={220}
+          virtual
+          dropdownStyle={{ overscrollBehavior: "contain" }}
+          filterOption={(input, opt) =>
+            `${opt?.label || ""} ${opt?.value || ""}`
+              .toLowerCase()
+              .includes(input.toLowerCase())
+          }
+          onChange={(v) => onPatch({ productSku: v })}
+        />
+      </Tooltip>
+      <Tooltip title="Màu phôi">
+        <AutoComplete
+          key={`c-${it.color || ""}`}
+          size="small"
+          className="w-[100px]"
+          placeholder="Màu"
+          defaultValue={it.color || ""}
+          options={colorOptions}
+          listHeight={220}
+          dropdownStyle={{ overscrollBehavior: "contain" }}
+          filterOption={(input, opt) =>
+            String(opt?.value || "")
+              .toLowerCase()
+              .includes(input.toLowerCase())
+          }
+          onSelect={(v) => v !== (it.color || "") && onPatch({ color: String(v) })}
+          onBlur={(e) => {
+            const v = (e.target as HTMLInputElement).value.trim();
+            if (v !== (it.color || "")) onPatch({ color: v });
+          }}
+        />
+      </Tooltip>
+      <Tooltip title="Size">
+        <Input
+          key={`s-${it.size || ""}`}
+          size="small"
+          className="w-[56px]"
+          placeholder="Size"
+          defaultValue={it.size || ""}
+          onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v !== (it.size || "")) onPatch({ size: v });
+          }}
+        />
+      </Tooltip>
+      <Tooltip title="Xong">
+        <button
+          onClick={() => setEditing(false)}
+          className="w-6 h-6 rounded-md border-0 bg-[#171826] text-white inline-flex items-center justify-center cursor-pointer text-[11px]"
+        >
+          ✓
+        </button>
+      </Tooltip>
+    </div>
+  );
+});
+
+/** Ô "Vùng in" của 1 sản phẩm — bấm mới hiện ô chọn (giữ bảng nhẹ) */
+const PrintAreaItemCell = memo(function PrintAreaItemCell({
+  it,
+  onPatch,
+}: {
+  it: any;
+  onPatch: (patch: any) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const special = it.printArea === "special";
+
+  if (!editing)
+    return (
+      <Tooltip title="Bấm để đổi vùng in">
+        <span
+          onClick={() => setEditing(true)}
+          className={`inline-block text-[11px] rounded-md px-2 py-1 whitespace-nowrap cursor-pointer ${
+            special
+              ? "bg-orange-50 border border-orange-200 text-orange-600 font-bold"
+              : "text-gray-400 border border-transparent hover:border-gray-200"
+          }`}
+        >
+          {special ? "Đặc biệt +$2" : "Mặc định"}
+        </span>
+      </Tooltip>
+    );
+
+  return (
+    <Select
+      size="small"
+      autoFocus
+      defaultOpen
+      className="w-[140px]"
+      value={special ? "special" : ""}
+      options={[
+        { value: "", label: "Mặc định" },
+        { value: "special", label: "Vùng in đặc biệt (+$2)" },
+      ]}
+      onChange={(v) => {
+        if (v !== (it.printArea || "")) onPatch({ printArea: v });
+        setEditing(false);
+      }}
+      onBlur={() => setEditing(false)}
+    />
+  );
+});
+
 function money(n: number) {
   return `$${(n || 0).toFixed(2)}`;
 }
@@ -91,6 +366,16 @@ export default function Sellers() {
   const { orders } = useOrders();
   const { products } = useBaseProducts();
   const { employees } = useCsEmployees();
+  // "Add ID" bên tab Quản lý nhân viên: mã đơn khách báo trước + ghi chú thay đổi
+  const { pendingIds } = usePendingOrderIds();
+  const pendingMut = usePendingOrderIdMutations();
+  const pendingByCode = useMemo(() => {
+    const m = new Map<string, any>();
+    pendingIds.forEach((p: any) =>
+      m.set(String(p.orderCode || "").trim().toLowerCase(), p)
+    );
+    return m;
+  }, [pendingIds]);
   const { colors: podColors } = usePodColors();
   // Tên phôi trong Kho Phôi POD theo SKU (vd TM-000-16 -> T-Shirt Comfort)
   const blankName = (sku?: string) =>
@@ -102,6 +387,18 @@ export default function Sellers() {
     const db = podColors.find((c) => c.name.trim().toLowerCase() === k);
     return db?.hex || DEFAULT_COLOR_HEX[k] || undefined;
   };
+  // Danh sách option dựng 1 lần — dropdown màu/phôi có hàng trăm dòng,
+  // nếu map lại mỗi lần render sẽ giật khi cuộn/gõ.
+  const productOptions = useMemo(
+    () =>
+      products.map((pd) => ({ value: pd.sku, label: pd.name || pd.sku })),
+    [products]
+  );
+  const colorOptions = useMemo(
+    () => podColors.map((c) => ({ value: c.name })),
+    [podColors]
+  );
+
   const sellerMut = useSellerMutations();
   const { removeSeller } = useSellerCascade();
   const storeMut = useStoreMutations();
@@ -127,7 +424,7 @@ export default function Sellers() {
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(20);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [tableFull, setTableFull] = useState(false);
   const [sellerPanelOpen, setSellerPanelOpen] = useState(true);
@@ -258,9 +555,11 @@ export default function Sellers() {
       if (trackingFilter === "available" && !hasTracking) return false;
       const hasPrintHouse = Boolean(String(o.printHouse || "").trim());
       if (printHouseFilter === "__unassigned__" && hasPrintHouse) return false;
+      if (printHouseFilter === "__assigned__" && !hasPrintHouse) return false;
       if (
         printHouseFilter &&
         printHouseFilter !== "__unassigned__" &&
+        printHouseFilter !== "__assigned__" &&
         o.printHouse !== printHouseFilter
       )
         return false;
@@ -611,11 +910,25 @@ export default function Sellers() {
           fresh.map((o) => o.id),
           { sentToFactoryAt: now }
         );
-        qc.invalidateQueries(["adm-orders"]);
       }
+      // Xuất file = đã đẩy cho xưởng -> đơn ĐANG SẢN XUẤT chuyển ĐANG GIAO HÀNG.
+      // Các trạng thái khác giữ nguyên.
+      const toShipping = list.filter((o) => o.status === "in_production");
+      if (toShipping.length) {
+        await sbUpdateMany(
+          "podOrders",
+          toShipping.map((o) => o.id),
+          { status: "shipping" }
+        );
+      }
+      if (fresh.length || toShipping.length)
+        qc.invalidateQueries(["adm-orders"]);
       message.success(
         `Đã xuất ${list.length} đơn (${lines} dòng sản phẩm)` +
-          (fresh.length ? ` · đánh dấu ${fresh.length} đơn đã chuyển xưởng` : "")
+          (fresh.length ? ` · đánh dấu ${fresh.length} đơn đã chuyển xưởng` : "") +
+          (toShipping.length
+            ? ` · ${toShipping.length} đơn Đang sản xuất → Đang giao hàng`
+            : "")
       );
     } catch (e: any) {
       message.error(`Xuất file lỗi: ${e?.message || e}`);
@@ -633,6 +946,14 @@ export default function Sellers() {
   const saveFactoryNote = async (o: PodOrder, note: string) => {
     await orderMut.update.mutateAsync({ id: o.id, factoryNote: note } as any);
   };
+  /** Sửa 1 sản phẩm trong đơn (phôi fulfill, link thiết kế...) */
+  const patchItem = async (o: PodOrder, idx: number, patch: any) => {
+    const items = (o.items || []).map((it, i) =>
+      i === idx ? { ...it, ...patch } : it
+    );
+    await orderMut.update.mutateAsync({ id: o.id, items } as any);
+  };
+
   const saveDtfDtg = async (o: PodOrder, v: string) => {
     await orderMut.update.mutateAsync({ id: o.id, dtfDtg: v } as any);
   };
@@ -1167,6 +1488,7 @@ export default function Sellers() {
             }}
             options={[
               { value: "__unassigned__", label: "Chưa gán nhà in" },
+              { value: "__assigned__", label: "Đã gán nhà in" },
               ...printHouseOptions.map((house) => ({
                 value: house.value,
                 label: house.value,
@@ -1285,9 +1607,9 @@ export default function Sellers() {
             <div className="text-xs leading-5">
               Xuất .xlsx đúng mẫu sheet của xưởng (mỗi sản phẩm 1 dòng).
               <br />
-              Đơn trong file sẽ được đánh dấu <b>đã chuyển xưởng</b> và tô{" "}
-              <b>vàng</b>; có tracking tự chuyển <b>xanh</b>; có Note thì{" "}
-              <b>đỏ</b>.
+              Đơn trong file được đánh dấu <b>đã chuyển xưởng</b>; đơn đang ở{" "}
+              <b>Đang sản xuất</b> sẽ tự chuyển sang <b>Đang giao hàng</b> (các
+              trạng thái khác giữ nguyên).
             </div>
           }
         >
@@ -1628,6 +1950,11 @@ export default function Sellers() {
                   <th className="p-3 font-medium">DTF/DTG</th>
                   <th className="p-3 font-medium">Tracking</th>
                   <th className="p-3 font-medium">
+                    <Tooltip title='Thông tin khách báo đổi — nhập ở ô "Add ID" bên tab Quản lý nhân viên'>
+                      <span className="cursor-help">Đổi thông tin</span>
+                    </Tooltip>
+                  </th>
+                  <th className="p-3 font-medium">
                     <Tooltip title="Đơn có ghi chú sẽ tô ĐỎ trong file gửi xưởng">
                       <span className="cursor-help">Note (vấn đề)</span>
                     </Tooltip>
@@ -1755,27 +2082,17 @@ export default function Sellers() {
                         </div>
                       </td>
                       <td className="p-3">
+                        {/* Phôi fulfill — bấm vào dòng mới hiện UI chỉnh sửa */}
                         <div className="space-y-1.5">
                           {(o.items || []).map((it, i) => (
-                            <div
+                            <FulfillItemCell
                               key={i}
-                              className="bg-[#F5F8FF] border border-[#DBE7FF] rounded-lg px-3 py-1.5 text-[12px] whitespace-nowrap"
-                            >
-                              <span className="bg-[#DBE7FF] text-[#2563EB] font-bold rounded px-1.5 py-0.5 mr-2">
-                                {it.quantity || 1}x
-                              </span>
-                              <span className="font-bold text-gray-800">
-                                {blankName(it.productSku)}
-                              </span>
-                              {(it.color || it.size) && (
-                                <span className="text-gray-400 italic">
-                                  {" "}
-                                  ({[it.color, it.size]
-                                    .filter(Boolean)
-                                    .join(" - ")})
-                                </span>
-                              )}
-                            </div>
+                              it={it}
+                              blankName={blankName}
+                              productOptions={productOptions}
+                              colorOptions={colorOptions}
+                              onPatch={(patch) => patchItem(o, i, patch)}
+                            />
                           ))}
                           {!o.items?.length && (
                             <span className="bg-[#EFF4FF] text-[#2563EB] text-[11px] font-medium rounded px-2 py-0.5">
@@ -1786,101 +2103,65 @@ export default function Sellers() {
                       </td>
                       <td className="p-3">
                         <div className="space-y-1.5">
-                          {(o.items || []).map((it, i) =>
-                            it.printArea === "special" ? (
-                              <div key={i}>
-                                <span className="bg-orange-50 border border-orange-200 text-orange-600 text-[11px] font-bold rounded-md px-2 py-1 whitespace-nowrap">
-                                  Đặc biệt +$2
-                                </span>
-                              </div>
-                            ) : (
-                              <div key={i}>
-                                <span className="text-gray-400 text-[11px] whitespace-nowrap">
-                                  Mặc định
-                                </span>
-                              </div>
-                            )
-                          )}
+                          {(o.items || []).map((it, i) => (
+                            <div key={i}>
+                              <PrintAreaItemCell
+                                it={it}
+                                onPatch={(patch) => patchItem(o, i, patch)}
+                              />
+                            </div>
+                          ))}
                           {!o.items?.length && (
                             <span className="text-gray-300 text-xs">—</span>
                           )}
                         </div>
                       </td>
                       <td className="p-3">
-                        {(() => {
-                          const it = o.items?.[0];
-                          const img =
-                            it?.mockupUrl || it?.frontUrl || it?.backUrl;
-                          if (!img) {
-                            // Chưa có thiết kế -> icon ghi chú, hover xem ghi chú của đơn
-                            const note =
-                              o.note ||
-                              (o.items || [])
-                                .map((x) => x.note)
-                                .filter(Boolean)
-                                .join(" · ") ||
-                              "Chưa có thiết kế";
+                        {/* Thiết kế: ảnh + link ngay dưới + upload, sửa được */}
+                        <div className="space-y-2">
+                          {(o.items || []).map((it, i) => {
+                            const bg = colorCss(it.color);
                             return (
-                              <Tooltip
-                                color="#FEFCE8"
-                                title={
-                                  <div className="text-center px-1 py-0.5">
-                                    <div className="text-[10px] font-bold tracking-widest text-[#B79351]">
-                                      GHI CHÚ:
-                                    </div>
-                                    <div className="border-t border-[#EADFC8] my-1" />
-                                    <div className="text-[13px] text-gray-800">
-                                      {note}
-                                    </div>
+                              <div key={i} className="space-y-1">
+                                {(o.items?.length || 0) > 1 && (
+                                  <div className="text-[9px] font-bold text-gray-400">
+                                    SP{i + 1}
                                   </div>
-                                }
-                              >
-                                <span className="w-14 h-14 rounded-lg border-2 border-[#C6A15B] bg-[#FBF6EC] inline-flex items-center justify-center cursor-help text-[22px]">
-                                  📝
-                                </span>
-                              </Tooltip>
-                            );
-                          }
-                          // Nền + khung theo màu của item (vd Maroon)
-                          const bg = colorCss(it?.color);
-                          const bgStyle = bg
-                            ? { background: bg, borderColor: bg }
-                            : undefined;
-                          return (
-                            <Popover
-                              placement="right"
-                              content={
-                                <div
-                                  style={bgStyle}
-                                  className={`w-[260px] h-[260px] flex items-center justify-center bg-gray-50 rounded-lg overflow-hidden ${
-                                    bg ? "p-2" : ""
-                                  }`}
-                                >
-                                  <img
-                                    src={toDirectImageUrl(img)}
-                                    alt="design"
-                                    referrerPolicy="no-referrer"
-                                    className="max-w-full max-h-full object-contain rounded"
-                                  />
-                                </div>
-                              }
-                            >
-                              <span
-                                style={bgStyle}
-                                className={`inline-flex items-center justify-center w-14 h-14 rounded-md border border-gray-200 bg-gray-50 cursor-zoom-in overflow-hidden ${
-                                  bg ? "p-[3px]" : ""
-                                }`}
-                              >
-                                <img
-                                  src={toDirectImageUrl(img)}
-                                  alt="design"
-                                  referrerPolicy="no-referrer"
-                                  className="w-full h-full object-contain rounded-[3px]"
+                                )}
+                                <DesignLinkCell
+                                  label="FRONT"
+                                  color="#2563EB"
+                                  bg={bg}
+                                  value={it.frontUrl}
+                                  onCommit={(v) =>
+                                    patchItem(o, i, { frontUrl: v })
+                                  }
                                 />
-                              </span>
-                            </Popover>
-                          );
-                        })()}
+                                <DesignLinkCell
+                                  label="BACK"
+                                  color="#7C3AED"
+                                  bg={bg}
+                                  value={it.backUrl}
+                                  onCommit={(v) =>
+                                    patchItem(o, i, { backUrl: v })
+                                  }
+                                />
+                                <DesignLinkCell
+                                  label="MOCKUP"
+                                  color="#B79351"
+                                  bg={bg}
+                                  value={it.mockupUrl}
+                                  onCommit={(v) =>
+                                    patchItem(o, i, { mockupUrl: v })
+                                  }
+                                />
+                              </div>
+                            );
+                          })}
+                          {!o.items?.length && (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-3">
                         <AutoComplete
@@ -1964,6 +2245,62 @@ export default function Sellers() {
                             if (v !== (o.tracking || "")) saveTracking(o, v);
                           }}
                         />
+                      </td>
+                      {/* Đổi thông tin: ghi chú kèm mã đơn khách gửi trước (Add ID) */}
+                      <td className="p-3">
+                        {(() => {
+                          const p = pendingByCode.get(
+                            String(o.orderCode || "").trim().toLowerCase()
+                          );
+                          if (!p)
+                            return (
+                              <span className="text-gray-300 text-xs">—</span>
+                            );
+                          const done = !!p.ackAt;
+                          return (
+                            <div className="w-[190px]">
+                              <div
+                                className={`rounded-lg px-2 py-1.5 text-[12px] border ${
+                                  done
+                                    ? "bg-gray-50 border-gray-200 text-gray-500"
+                                    : "bg-[#FDECEC] border-[#F5C2C2] text-[#B91C1C] font-semibold"
+                                }`}
+                              >
+                                {p.note || "Khách báo đổi thông tin"}
+                              </div>
+                              <div className="text-[10px] text-gray-400 mt-0.5">
+                                {p.createdBy || "—"}
+                                {p.created
+                                  ? ` · ${dayjs(p.created).format(
+                                      "DD/MM HH:mm"
+                                    )}`
+                                  : ""}
+                              </div>
+                              {!done && (
+                                <button
+                                  onClick={() =>
+                                    pendingMut.update.mutate(
+                                      {
+                                        id: p.id,
+                                        ackAt: new Date().toISOString(),
+                                      },
+                                      {
+                                        onSuccess: () => {
+                                          message.success(
+                                            `Đã xác nhận xử lý đổi thông tin đơn ${o.orderCode}`
+                                          );
+                                        },
+                                      }
+                                    )
+                                  }
+                                  className="mt-1 text-[10px] text-gray-400 bg-transparent border-0 cursor-pointer underline p-0 hover:text-gray-600"
+                                >
+                                  Đánh dấu đã xử lý
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       {/* Note vấn đề của đơn — có note thì file xuất tô ĐỎ */}
                       <td className="p-3">

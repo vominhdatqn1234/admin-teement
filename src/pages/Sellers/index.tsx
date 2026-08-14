@@ -545,9 +545,9 @@ export default function Sellers() {
     [searchCode]
   );
 
-  const filtered = useMemo(() => {
+  // Lọc theo MỌI điều kiện trừ tab trạng thái -> dùng để đếm số trên từng tab
+  const baseFiltered = useMemo(() => {
     return orders.filter((o) => {
-      if (statusTab !== "all" && o.status !== statusTab) return false;
       if (filterSeller && o.userId !== filterSeller) return false;
       if (filterShop && o.storeId !== filterShop) return false;
       const hasTracking = Boolean(String(o.tracking || "").trim());
@@ -600,7 +600,6 @@ export default function Sellers() {
     });
   }, [
     orders,
-    statusTab,
     filterSeller,
     filterShop,
     trackingFilter,
@@ -613,6 +612,23 @@ export default function Sellers() {
     fromDate,
     toDate,
   ]);
+
+  const filtered = useMemo(
+    () =>
+      statusTab === "all"
+        ? baseFiltered
+        : baseFiltered.filter((o) => o.status === statusTab),
+    [baseFiltered, statusTab]
+  );
+
+  /** Số đơn của từng tab trạng thái (theo các bộ lọc đang áp dụng) */
+  const tabCounts = useMemo(() => {
+    const c: Record<string, number> = { all: baseFiltered.length };
+    baseFiltered.forEach((o) => {
+      c[o.status] = (c[o.status] || 0) + 1;
+    });
+    return c;
+  }, [baseFiltered]);
 
   // ---- Bảng giá phôi + tính Lợi nhuận (Đơn giá − Giá nhà in) ----
   const { variants } = usePodVariants();
@@ -1077,6 +1093,7 @@ export default function Sellers() {
   const handleImportTracking = async (file: File) => {
     const rows = parseCSV(await file.text());
     let count = 0;
+    let done = 0;
     for (const r of rows) {
       // Nhận cả file "Trackking.csv" (Oder ID / Track / Nhà vận chuyển)
       const code =
@@ -1085,14 +1102,22 @@ export default function Sellers() {
       if (!code || !tracking) continue;
       const order = orders.find((o) => o.orderCode === String(code).trim());
       if (!order) continue;
+      // Đơn đang giao hàng -> có tracking là xong (Hoàn thành);
+      // các trạng thái khác -> chuyển Đang giao hàng như cũ.
+      const next = order.status === "shipping" ? "completed" : "shipping";
+      if (next === "completed") done++;
       await orderMut.update.mutateAsync({
         id: order.id,
         tracking: String(tracking).trim(),
-        status: "shipping",
+        status: next,
       });
       count++;
     }
-    message.success(`Đã cập nhật tracking cho ${count} đơn (chuyển Đang giao hàng)`);
+    message.success(
+      `Đã cập nhật tracking cho ${count} đơn` +
+        (done ? ` · ${done} đơn chuyển Hoàn thành` : "") +
+        (count - done ? ` · ${count - done} đơn chuyển Đang giao hàng` : "")
+    );
   };
 
   // Import file Giá đối chiếu: cột Order ID + Giá (đối chiếu). Đơn có id trong
@@ -1132,10 +1157,17 @@ export default function Sellers() {
   };
 
   const saveTracking = async (o: PodOrder, tracking: string) => {
-    await orderMut.update.mutateAsync({ id: o.id, tracking });
+    // Đơn đang giao hàng mà có tracking -> coi như xong, chuyển HOÀN THÀNH
+    const toCompleted = !!tracking && o.status === "shipping";
+    await orderMut.update.mutateAsync({
+      id: o.id,
+      tracking,
+      ...(toCompleted ? { status: "completed" } : {}),
+    } as any);
     message.success(
       tracking
-        ? `Đã lưu tracking cho đơn ${o.orderCode}`
+        ? `Đã lưu tracking cho đơn ${o.orderCode}` +
+            (toCompleted ? " · chuyển Hoàn thành" : "")
         : `Đã xóa tracking đơn ${o.orderCode}`
     );
   };
@@ -1843,6 +1875,17 @@ export default function Sellers() {
                 }`}
               >
                 {t.label}
+                {tabCounts[t.key] ? (
+                  <span
+                    className={`ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold ${
+                      statusTab === t.key
+                        ? "bg-white text-[#171826]"
+                        : "bg-[#DC2626] text-white"
+                    }`}
+                  >
+                    {tabCounts[t.key]}
+                  </span>
+                ) : null}
               </button>
             ))}
             <span className="ml-auto text-xs bg-gray-100 rounded-full px-3 py-1 text-gray-600 font-medium">
@@ -1943,17 +1986,17 @@ export default function Sellers() {
                   <th className="p-3 font-bold text-[#2563EB]">
                     Phôi Fulfill
                   </th>
+                  <th className="p-3 font-medium">
+                    <Tooltip title='Thông tin khách báo đổi — nhập ở ô "Add ID" bên tab Quản lý nhân viên'>
+                      <span className="cursor-help">Đổi thông tin</span>
+                    </Tooltip>
+                  </th>
                   <th className="p-3 font-medium">Vùng in</th>
                   <th className="p-3 font-medium">Thiết kế</th>
                   <th className="p-3 font-medium">Nhà In</th>
                   <th className="p-3 font-medium">Variant ID</th>
                   <th className="p-3 font-medium">DTF/DTG</th>
                   <th className="p-3 font-medium">Tracking</th>
-                  <th className="p-3 font-medium">
-                    <Tooltip title='Thông tin khách báo đổi — nhập ở ô "Add ID" bên tab Quản lý nhân viên'>
-                      <span className="cursor-help">Đổi thông tin</span>
-                    </Tooltip>
-                  </th>
                   <th className="p-3 font-medium">
                     <Tooltip title="Đơn có ghi chú sẽ tô ĐỎ trong file gửi xưởng">
                       <span className="cursor-help">Note (vấn đề)</span>
@@ -2101,6 +2144,62 @@ export default function Sellers() {
                           )}
                         </div>
                       </td>
+                      {/* Đổi thông tin: ghi chú kèm mã đơn khách gửi trước (Add ID) */}
+                      <td className="p-3">
+                        {(() => {
+                          const p = pendingByCode.get(
+                            String(o.orderCode || "").trim().toLowerCase()
+                          );
+                          if (!p)
+                            return (
+                              <span className="text-gray-300 text-xs">—</span>
+                            );
+                          const done = !!p.ackAt;
+                          return (
+                            <div className="w-[190px]">
+                              <div
+                                className={`rounded-lg px-2 py-1.5 text-[12px] border ${
+                                  done
+                                    ? "bg-gray-50 border-gray-200 text-gray-500"
+                                    : "bg-[#FDECEC] border-[#F5C2C2] text-[#B91C1C] font-semibold"
+                                }`}
+                              >
+                                {p.note || "Khách báo đổi thông tin"}
+                              </div>
+                              <div className="text-[10px] text-gray-400 mt-0.5">
+                                {p.createdBy || "—"}
+                                {p.created
+                                  ? ` · ${dayjs(p.created).format(
+                                      "DD/MM HH:mm"
+                                    )}`
+                                  : ""}
+                              </div>
+                              {!done && (
+                                <button
+                                  onClick={() =>
+                                    pendingMut.update.mutate(
+                                      {
+                                        id: p.id,
+                                        ackAt: new Date().toISOString(),
+                                      },
+                                      {
+                                        onSuccess: () => {
+                                          message.success(
+                                            `Đã xác nhận xử lý đổi thông tin đơn ${o.orderCode}`
+                                          );
+                                        },
+                                      }
+                                    )
+                                  }
+                                  className="mt-1 text-[10px] text-gray-400 bg-transparent border-0 cursor-pointer underline p-0 hover:text-gray-600"
+                                >
+                                  Đánh dấu đã xử lý
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="p-3">
                         <div className="space-y-1.5">
                           {(o.items || []).map((it, i) => (
@@ -2245,62 +2344,6 @@ export default function Sellers() {
                             if (v !== (o.tracking || "")) saveTracking(o, v);
                           }}
                         />
-                      </td>
-                      {/* Đổi thông tin: ghi chú kèm mã đơn khách gửi trước (Add ID) */}
-                      <td className="p-3">
-                        {(() => {
-                          const p = pendingByCode.get(
-                            String(o.orderCode || "").trim().toLowerCase()
-                          );
-                          if (!p)
-                            return (
-                              <span className="text-gray-300 text-xs">—</span>
-                            );
-                          const done = !!p.ackAt;
-                          return (
-                            <div className="w-[190px]">
-                              <div
-                                className={`rounded-lg px-2 py-1.5 text-[12px] border ${
-                                  done
-                                    ? "bg-gray-50 border-gray-200 text-gray-500"
-                                    : "bg-[#FDECEC] border-[#F5C2C2] text-[#B91C1C] font-semibold"
-                                }`}
-                              >
-                                {p.note || "Khách báo đổi thông tin"}
-                              </div>
-                              <div className="text-[10px] text-gray-400 mt-0.5">
-                                {p.createdBy || "—"}
-                                {p.created
-                                  ? ` · ${dayjs(p.created).format(
-                                      "DD/MM HH:mm"
-                                    )}`
-                                  : ""}
-                              </div>
-                              {!done && (
-                                <button
-                                  onClick={() =>
-                                    pendingMut.update.mutate(
-                                      {
-                                        id: p.id,
-                                        ackAt: new Date().toISOString(),
-                                      },
-                                      {
-                                        onSuccess: () => {
-                                          message.success(
-                                            `Đã xác nhận xử lý đổi thông tin đơn ${o.orderCode}`
-                                          );
-                                        },
-                                      }
-                                    )
-                                  }
-                                  className="mt-1 text-[10px] text-gray-400 bg-transparent border-0 cursor-pointer underline p-0 hover:text-gray-600"
-                                >
-                                  Đánh dấu đã xử lý
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })()}
                       </td>
                       {/* Note vấn đề của đơn — có note thì file xuất tô ĐỎ */}
                       <td className="p-3">

@@ -5,6 +5,7 @@ import {
   Modal,
   Pagination,
   Popconfirm,
+  Select,
   Tooltip,
   message,
 } from "antd";
@@ -21,6 +22,7 @@ import {
   useStoreMutations,
 } from "../../hooks/useAdmin";
 import { PAID_STATUSES, Seller, Store } from "../../models/admin";
+import { downloadXlsx } from "../../lib/xlsx";
 
 function money(n: number) {
   return `$${(n || 0).toFixed(2)}`;
@@ -51,7 +53,110 @@ export default function Finance() {
   const { entries } = useLedger();
   const { add: addLedger, remove: removeLedger } = useLedgerMutations();
   const { update: updateStore } = useStoreMutations();
-  const [tab, setTab] = useState<"breakdown" | "history">("breakdown");
+  const [tab, setTab] = useState<"breakdown" | "history" | "recon">(
+    "breakdown"
+  );
+
+  /* ------------------------ ĐỐI CHIẾU ID ĐƠN ------------------------
+   * Dán danh sách mã đơn (mỗi dòng 1 mã) -> tách 2 nhóm:
+   *  - Có đơn: hiện shop / khách / số tiền.
+   *  - Không có: cho admin gán tay về shop + số tiền để tính vào công nợ.
+   * Chỉ xem tại chỗ + xuất file, không lưu vào DB.
+   */
+  const [reconInput, setReconInput] = useState("");
+  const [reconIds, setReconIds] = useState<string[]>([]);
+  const [reconAssign, setReconAssign] = useState<
+    Record<string, { storeId?: string; amount?: number }>
+  >({});
+
+  const orderByCode = useMemo(() => {
+    const m = new Map<string, any>();
+    orders.forEach((o) =>
+      m.set(String(o.orderCode || "").trim().toLowerCase(), o)
+    );
+    return m;
+  }, [orders]);
+
+  const storeById = useMemo(() => {
+    const m = new Map<string, Store>();
+    stores.forEach((st) => m.set(st.id, st));
+    return m;
+  }, [stores]);
+
+  const sellerNameOf = (userId?: string) => {
+    const sl = sellers.find((x) => x.id === userId);
+    return sl?.name || sl?.email || "—";
+  };
+
+  const runRecon = () => {
+    const ids = reconInput
+      .split(/[\n,;\t]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!ids.length) return message.warning("Chưa dán mã đơn nào");
+    setReconIds(ids);
+    setReconAssign({});
+  };
+
+  const reconRows = useMemo(() => {
+    const seen = new Map<string, number>();
+    return reconIds.map((id) => {
+      const key = id.toLowerCase();
+      const n = (seen.get(key) || 0) + 1;
+      seen.set(key, n);
+      const order = orderByCode.get(key);
+      const store = order?.storeId ? storeById.get(order.storeId) : undefined;
+      return {
+        id,
+        duplicate: n > 1,
+        order,
+        found: !!order,
+        shopName: order?.storeName || store?.name || "",
+        sellerName: sellerNameOf(store?.userId || order?.userId),
+        customer: order?.customerName || "",
+        total: Number(order?.total) || 0,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reconIds, orderByCode, storeById, sellers]);
+
+  const reconFound = reconRows.filter((r) => r.found);
+  const reconMissing = reconRows.filter((r) => !r.found);
+  const reconFoundTotal = reconFound.reduce((s, r) => s + r.total, 0);
+  const reconAssignedTotal = reconMissing.reduce(
+    (s, r) => s + (Number(reconAssign[r.id]?.amount) || 0),
+    0
+  );
+
+  const exportRecon = () => {
+    if (!reconRows.length) return message.warning("Chưa có kết quả đối chiếu");
+    const header = [
+      "Mã đơn",
+      "Kết quả",
+      "Shop",
+      "Seller",
+      "Khách hàng",
+      "Số tiền",
+      "Ghi chú",
+    ].map((h) => ({ value: h, fill: "#171826", fontColor: "#FFFFFF", bold: true }));
+    const rows = reconRows.map((r) => {
+      const asg = reconAssign[r.id];
+      const store = asg?.storeId ? storeById.get(asg.storeId) : undefined;
+      return [
+        r.id,
+        r.found ? "Có đơn" : store ? "Gán tay" : "Không tìm thấy",
+        r.found ? r.shopName : store?.name || "",
+        r.found ? r.sellerName : sellerNameOf(store?.userId),
+        r.customer,
+        r.found ? r.total : Number(asg?.amount) || 0,
+        r.duplicate ? "ID bị lặp trong danh sách" : "",
+      ].map((value) => ({ value }));
+    });
+    downloadXlsx(`doi-chieu_${dayjs().format("YYYY-MM-DD_HHmm")}.xlsx`, [
+      header,
+      ...rows,
+    ], { sheetName: "Đối chiếu", widths: [16, 14, 22, 20, 22, 12, 26] });
+  };
   const [expanded, setExpanded] = useState<string[]>([]);
   const [finPage, setFinPage] = useState(1);
   const FIN_PAGE_SIZE = 10;
@@ -359,7 +464,210 @@ export default function Finance() {
         >
           Lịch sử duyệt gạch nợ toàn cục
         </button>
+        <button
+          onClick={() => setTab("recon")}
+          className={`px-4 py-2 rounded-md text-sm cursor-pointer border-0 ${
+            tab === "recon"
+              ? "bg-[#171826] text-white font-medium"
+              : "bg-transparent text-gray-500"
+          }`}
+        >
+          Đối chiếu ID đơn
+        </button>
       </div>
+
+      {tab === "recon" && (
+        <div className="space-y-4">
+          <div className="border border-gray-200 rounded-xl p-4 bg-white">
+            <div className="font-semibold text-gray-800 text-[14px]">
+              Dán danh sách mã đơn cần đối chiếu
+            </div>
+            <p className="text-gray-400 text-xs mt-0.5 mb-3">
+              Mỗi mã 1 dòng (hoặc ngăn bởi dấu phẩy). Hệ thống tách 2 nhóm: mã
+              có đơn trong hệ thống (kèm shop / khách) và mã không tìm thấy —
+              nhóm không tìm thấy có thể gán tay về shop để tính vào công nợ.
+            </p>
+            <Input.TextArea
+              rows={5}
+              placeholder={"123\n456\n758"}
+              value={reconInput}
+              onChange={(e) => setReconInput(e.target.value)}
+            />
+            <div className="flex items-center gap-2 mt-3 flex-wrap">
+              <Button
+                type="primary"
+                className="bg-[#171826]"
+                onClick={runRecon}
+              >
+                Đối chiếu
+              </Button>
+              <Button
+                onClick={() => {
+                  setReconInput("");
+                  setReconIds([]);
+                  setReconAssign({});
+                }}
+              >
+                Xoá kết quả
+              </Button>
+              {reconRows.length > 0 && (
+                <Button onClick={exportRecon}>Xuất file (XLSX)</Button>
+              )}
+              {reconRows.length > 0 && (
+                <span className="ml-auto text-xs text-gray-500">
+                  Tổng {reconRows.length} mã ·{" "}
+                  <b className="text-emerald-600">{reconFound.length} có đơn</b>{" "}
+                  ({money(reconFoundTotal)}) ·{" "}
+                  <b className="text-red-500">
+                    {reconMissing.length} không tìm thấy
+                  </b>
+                  {reconAssignedTotal
+                    ? ` · gán tay ${money(reconAssignedTotal)}`
+                    : ""}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {reconRows.length > 0 && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {/* Nhóm có đơn */}
+              <div className="border border-gray-200 rounded-xl bg-white overflow-hidden">
+                <div className="px-4 py-3 border-b border-gray-100 font-semibold text-gray-800 text-[14px]">
+                  Có đơn ({reconFound.length}) · {money(reconFoundTotal)}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[13px] border-collapse">
+                    <thead>
+                      <tr className="text-left text-gray-500 bg-gray-50 border-b border-gray-200">
+                        <th className="p-2.5 font-medium">Mã đơn</th>
+                        <th className="p-2.5 font-medium">Shop</th>
+                        <th className="p-2.5 font-medium">Khách hàng</th>
+                        <th className="p-2.5 font-medium text-right">Tiền</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reconFound.map((r, i) => (
+                        <tr key={`${r.id}-${i}`} className="border-b border-gray-50">
+                          <td className="p-2.5 font-semibold text-gray-800">
+                            {r.id}
+                            {r.duplicate && (
+                              <span className="ml-1 text-[10px] text-amber-600">
+                                (lặp)
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-2.5">
+                            <div className="text-gray-800">
+                              {r.shopName || "—"}
+                            </div>
+                            <div className="text-[11px] text-gray-400">
+                              {r.sellerName}
+                            </div>
+                          </td>
+                          <td className="p-2.5 text-gray-600">
+                            {r.customer || "—"}
+                          </td>
+                          <td className="p-2.5 text-right font-medium">
+                            {money(r.total)}
+                          </td>
+                        </tr>
+                      ))}
+                      {!reconFound.length && (
+                        <tr>
+                          <td colSpan={4} className="p-8 text-center text-gray-400">
+                            Không có mã nào khớp
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Nhóm không tìm thấy -> gán tay */}
+              <div className="border border-gray-200 rounded-xl bg-white overflow-hidden">
+                <div className="px-4 py-3 border-b border-gray-100 font-semibold text-gray-800 text-[14px]">
+                  Không tìm thấy ({reconMissing.length})
+                  <span className="font-normal text-gray-400 text-xs ml-2">
+                    chọn shop + nhập tiền để gán tay
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[13px] border-collapse">
+                    <thead>
+                      <tr className="text-left text-gray-500 bg-gray-50 border-b border-gray-200">
+                        <th className="p-2.5 font-medium">Mã đơn</th>
+                        <th className="p-2.5 font-medium">Gán về shop</th>
+                        <th className="p-2.5 font-medium text-right">Tiền</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reconMissing.map((r, i) => (
+                        <tr key={`${r.id}-${i}`} className="border-b border-gray-50">
+                          <td className="p-2.5 font-semibold text-red-600">
+                            {r.id}
+                          </td>
+                          <td className="p-2.5">
+                            <Select
+                              size="small"
+                              className="w-[220px]"
+                              showSearch
+                              allowClear
+                              placeholder="Chọn shop / khách..."
+                              value={reconAssign[r.id]?.storeId}
+                              options={stores.map((st) => ({
+                                value: st.id,
+                                label: `${st.name} · ${sellerNameOf(st.userId)}`,
+                              }))}
+                              filterOption={(input, opt) =>
+                                String(opt?.label || "")
+                                  .toLowerCase()
+                                  .includes(input.toLowerCase())
+                              }
+                              onChange={(v) =>
+                                setReconAssign((prev) => ({
+                                  ...prev,
+                                  [r.id]: { ...prev[r.id], storeId: v },
+                                }))
+                              }
+                            />
+                          </td>
+                          <td className="p-2.5 text-right">
+                            <InputNumber
+                              size="small"
+                              min={0}
+                              step={0.01}
+                              className="w-[100px]"
+                              value={reconAssign[r.id]?.amount}
+                              onChange={(v) =>
+                                setReconAssign((prev) => ({
+                                  ...prev,
+                                  [r.id]: {
+                                    ...prev[r.id],
+                                    amount: (v as number) ?? 0,
+                                  },
+                                }))
+                              }
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                      {!reconMissing.length && (
+                        <tr>
+                          <td colSpan={3} className="p-8 text-center text-gray-400">
+                            Tất cả mã đều có đơn
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === "breakdown" && (
         <div className="space-y-3">

@@ -19,6 +19,7 @@ import {
 } from "react-icons/fi";
 import { NavLink, Navigate, Outlet } from "react-router-dom";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
+import { useImportQueue, usePendingOrderIds } from "../../hooks/useAdmin";
 
 const EXTENSIONS = [
   { to: "/app/finance", label: "Tài chính & Công nợ", icon: <FiDollarSign /> },
@@ -38,6 +39,22 @@ const EXTENSIONS = [
 export default function AdminLayout() {
   const { adminUser, logout } = useAdminAuth();
   const [collapsed, setCollapsed] = useState(false);
+  // Số đơn khách báo ĐỔI THÔNG TIN (đã có đơn thật, chưa bấm đã xử lý)
+  const { pendingIds } = usePendingOrderIds();
+  const changeCount = pendingIds.filter(
+    (p) => p.matchedOrderId && !p.ackAt
+  ).length;
+  // Số lô import PDF đang chờ admin duyệt
+  const { batches } = useImportQueue();
+  const queueCount = batches.filter((b) => b.status === "pending").length;
+
+  /** Số hiện badge đỏ cho từng menu */
+  const badgeOf = (to: string) =>
+    to === "/app/order-care"
+      ? changeCount
+      : to === "/app/import-queue"
+      ? queueCount
+      : 0;
 
   if (!adminUser) return <Navigate to="/login" />;
 
@@ -122,12 +139,40 @@ export default function AdminLayout() {
                     }`
                   }
                 >
-                  <span className="text-gray-400">{m.icon}</span>
+                  <span className="text-gray-400 relative">
+                    {m.icon}
+                    {/* Badge đỏ khi thu gọn menu (không có chỗ cho số bên phải) */}
+                    {collapsed && badgeOf(m.to) > 0 && (
+                      <span className="absolute -top-1.5 -right-2 min-w-[15px] h-[15px] px-[3px] rounded-full bg-[#DC2626] text-white text-[9px] font-bold flex items-center justify-center">
+                        {badgeOf(m.to)}
+                      </span>
+                    )}
+                  </span>
                   {!collapsed && m.label}
+                  {!collapsed && badgeOf(m.to) > 0 && (
+                    <span
+                      title={
+                        m.to === "/app/order-care"
+                          ? `${changeCount} đơn khách báo đổi thông tin chưa xử lý`
+                          : `${queueCount} lô import PDF đang chờ duyệt`
+                      }
+                      className="ml-auto min-w-[18px] h-[18px] px-1.5 rounded-full bg-[#DC2626] text-white text-[10px] font-bold flex items-center justify-center"
+                    >
+                      {badgeOf(m.to)}
+                    </span>
+                  )}
                 </NavLink>
               );
               return collapsed ? (
-                <Tooltip key={m.to} title={m.label} placement="right">
+                <Tooltip
+                  key={m.to}
+                  title={
+                    badgeOf(m.to) > 0
+                      ? `${m.label} · ${badgeOf(m.to)} việc cần xử lý`
+                      : m.label
+                  }
+                  placement="right"
+                >
                   {link}
                 </Tooltip>
               ) : (

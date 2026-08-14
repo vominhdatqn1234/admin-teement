@@ -114,7 +114,7 @@ export interface OrderItem {
   origType?: string;
   origColor?: string;
   origSize?: string;
-  /** Vùng in: "" = Mặc định, "special" = Vùng in đặc biệt 16*21 (+$2/sp) */
+  /** Vùng in: "" Mặc định | "special" Vùng in đặc biệt | "full" In Full */
   printArea?: string;
   personalization?: string;
   quantity: number;

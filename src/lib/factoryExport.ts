@@ -200,7 +200,7 @@ export function buildFactoryRows(
         Number(it.quantity || 1),
         opts.findVariantId(o.printHouse, it),
         ...DESIGN_FIELDS.map((f) => f.url(it)),
-        it.printArea === "special" ? "x" : "",
+        it.printArea === "special" ? "x" : it.printArea === "full" ? "FULL" : "",
         ...MOCKUP_FIELDS.map((f) => f.url(it)),
         productNote(it),
         str(o.dtfDtg), // DTF/DTG — admin nhập

@@ -54,6 +54,7 @@ import {
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
 import { sbUpdateMany, sbUpsert } from "../../lib/supabase";
 import { useQueryClient } from "react-query";
+import { useSearchParams } from "react-router-dom";
 import {
   ORDER_STATUS,
   OrderItem,
@@ -318,7 +319,9 @@ const PrintAreaItemCell = memo(function PrintAreaItemCell({
   onPatch: (patch: any) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const special = it.printArea === "special";
+  const area = it.printArea || "";
+  const label =
+    area === "special" ? "Đặc biệt" : area === "full" ? "In Full" : "Mặc định";
 
   if (!editing)
     return (
@@ -326,12 +329,12 @@ const PrintAreaItemCell = memo(function PrintAreaItemCell({
         <span
           onClick={() => setEditing(true)}
           className={`inline-block text-[11px] rounded-md px-2 py-1 whitespace-nowrap cursor-pointer ${
-            special
+            area
               ? "bg-orange-50 border border-orange-200 text-orange-600 font-bold"
               : "text-gray-400 border border-transparent hover:border-gray-200"
           }`}
         >
-          {special ? "Đặc biệt +$2" : "Mặc định"}
+          {label}
         </span>
       </Tooltip>
     );
@@ -341,11 +344,12 @@ const PrintAreaItemCell = memo(function PrintAreaItemCell({
       size="small"
       autoFocus
       defaultOpen
-      className="w-[140px]"
-      value={special ? "special" : ""}
+      className="w-[150px]"
+      value={area}
       options={[
         { value: "", label: "Mặc định" },
-        { value: "special", label: "Vùng in đặc biệt (+$2)" },
+        { value: "special", label: "Vùng in đặc biệt" },
+        { value: "full", label: "In Full" },
       ]}
       onChange={(v) => {
         if (v !== (it.printArea || "")) onPatch({ printArea: v });
@@ -432,6 +436,16 @@ export default function Sellers() {
     "all"
   );
   const [exportingFactory, setExportingFactory] = useState(false);
+  // Mở từ Thông báo: /app/sellers?code=<mã đơn> -> điền sẵn ô tìm kiếm
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const code = searchParams.get("code");
+    if (code) {
+      setSearchCode(code);
+      setStatusTab("all");
+      setPage(1);
+    }
+  }, [searchParams]);
   const [detail, setDetail] = useState<PodOrder | null>(null);
   const [sellerDetail, setSellerDetail] = useState<Seller | null>(null);
   const [sellerEdit, setSellerEdit] = useState<Seller | null>(null);
@@ -836,9 +850,9 @@ export default function Sellers() {
         ],
         list.map((o) => {
           const f = feesOf(o.userId);
-          const printArea = (o.items || []).some(
-            (it) => it.printArea === "special"
-          )
+          const printArea = (o.items || []).some((it) => it.printArea === "full")
+            ? "In Full"
+            : (o.items || []).some((it) => it.printArea === "special")
             ? "Vùng in đặc biệt"
             : "Mặc định";
           const address = [o.address1, o.address2].filter(Boolean).join(", ");
@@ -1216,7 +1230,11 @@ export default function Sellers() {
       backMockupUrl: it.backUrl ? it.mockupUrl || "" : "",
       // Vùng in -> ghi vào Front Print Size của phiếu in
       frontPrintSize:
-        it.printArea === "special" ? "Vùng in đặc biệt" : "Mặc định",
+        it.printArea === "special"
+          ? "Vùng in đặc biệt"
+          : it.printArea === "full"
+          ? "In Full"
+          : "Mặc định",
       note: it.note || o.note || "",
       printHouse,
       created: new Date().toISOString(),
@@ -2842,12 +2860,16 @@ export default function Sellers() {
                               Special Print:{" "}
                               <b
                                 className={
-                                  it.printArea === "special"
+                                  it.printArea
                                     ? "text-orange-600"
                                     : "text-gray-400"
                                 }
                               >
-                                {it.printArea === "special" ? "x" : "—"}
+                                {it.printArea === "special"
+                                  ? "x"
+                                  : it.printArea === "full"
+                                  ? "FULL"
+                                  : "—"}
                               </b>
                             </span>
                           </div>

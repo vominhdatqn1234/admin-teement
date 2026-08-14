@@ -1,5 +1,5 @@
 import { Dropdown, Tooltip } from "antd";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   FiDollarSign,
   FiUsers,
@@ -16,15 +16,26 @@ import {
   FiSidebar,
   FiInbox,
   FiHeadphones,
+  FiBell,
 } from "react-icons/fi";
 import { NavLink, Navigate, Outlet } from "react-router-dom";
 import { useAdminAuth } from "../../hooks/useAdminAuth";
-import { useImportQueue, usePendingOrderIds } from "../../hooks/useAdmin";
+import {
+  useImportQueue,
+  useLedger,
+  useOrders,
+  usePendingOrderIds,
+  useSellers,
+  useStores,
+} from "../../hooks/useAdmin";
+import { PAID_STATUSES } from "../../models/admin";
+import { getNotifState, unreadPaidCount } from "../../pages/Notifications";
 
 const EXTENSIONS = [
   { to: "/app/finance", label: "Tài chính & Công nợ", icon: <FiDollarSign /> },
   { to: "/app/sellers", label: "Quản lý Seller", icon: <FiUsers /> },
   { to: "/app/order-care", label: "Quản lý nhân viên", icon: <FiHeadphones /> },
+  { to: "/app/notifications", label: "Thông báo", icon: <FiBell /> },
   { to: "/app/import-queue", label: "Hàng đợi import PDF", icon: <FiInbox /> },
   { to: "/app/services", label: "Dịch vụ mở rộng", icon: <FiFileText /> },
   { to: "/app/blanks", label: "Kho Phôi POD", icon: <FiBox /> },
@@ -48,12 +59,68 @@ export default function AdminLayout() {
   const { batches } = useImportQueue();
   const queueCount = batches.filter((b) => b.status === "pending").length;
 
+  // Đơn đang chờ admin duyệt
+  const { orders } = useOrders();
+  const approvalCount = orders.filter(
+    (o) => o.status === "pending_approval"
+  ).length;
+
+  /* Số SHOP còn nợ (doanh thu đơn đã thanh toán − đã gạch nợ > 0) */
+  const { sellers } = useSellers();
+  const { stores } = useStores();
+  const { entries } = useLedger();
+  const debtShopCount = useMemo(() => {
+    const sellerIds = new Set(
+      sellers.filter((s) => s.permission !== "Admin").map((s) => s.id)
+    );
+    return stores.filter((store) => {
+      if (store.userId && !sellerIds.has(store.userId)) return false;
+      const seller = sellers.find((s) => s.id === store.userId);
+      const extraPerOrder =
+        (seller?.markup || 0) +
+        (seller?.perOrderFee || 0) -
+        (seller?.discount || 0);
+      const storeOrders = orders.filter(
+        (o) => o.storeId === store.id && PAID_STATUSES.includes(o.status)
+      );
+      const revenue =
+        storeOrders.reduce((s, o) => s + (o.total || 0), 0) +
+        extraPerOrder * storeOrders.length;
+      const matched = entries
+        .filter((e) => e.storeId === store.id)
+        .reduce((s, e) => s + (e.amount || 0), 0);
+      return revenue - matched > 0.005;
+    }).length;
+  }, [sellers, stores, orders, entries]);
+
+  /* Thông báo: đơn khách gửi thanh toán sau mốc admin đã xem */
+  const [notifState, setNotifState] = useState(getNotifState);
+  useEffect(() => {
+    const sync = () => setNotifState(getNotifState());
+    window.addEventListener("adm-notif-seen", sync);
+    window.addEventListener("focus", sync);
+    return () => {
+      window.removeEventListener("adm-notif-seen", sync);
+      window.removeEventListener("focus", sync);
+    };
+  }, []);
+  const notifCount = useMemo(
+    () => unreadPaidCount(orders, notifState),
+    [orders, notifState]
+  );
+
   /** Số hiện badge đỏ cho từng menu */
   const badgeOf = (to: string) =>
     to === "/app/order-care"
       ? changeCount
       : to === "/app/import-queue"
       ? queueCount
+      : to === "/app/sellers"
+      ? approvalCount
+      : to === "/app/finance"
+      ? debtShopCount
+      : to === "/app/notifications"
+      ? notifCount
       : 0;
 
   if (!adminUser) return <Navigate to="/login" />;
@@ -154,6 +221,12 @@ export default function AdminLayout() {
                       title={
                         m.to === "/app/order-care"
                           ? `${changeCount} đơn khách báo đổi thông tin chưa xử lý`
+                          : m.to === "/app/sellers"
+                          ? `${approvalCount} đơn đang chờ duyệt`
+                          : m.to === "/app/finance"
+                          ? `${debtShopCount} shop chưa gạch nợ`
+                          : m.to === "/app/notifications"
+                          ? `${notifCount} đơn khách gửi thanh toán chưa đọc`
                           : `${queueCount} lô import PDF đang chờ duyệt`
                       }
                       className="ml-auto min-w-[18px] h-[18px] px-1.5 rounded-full bg-[#DC2626] text-white text-[10px] font-bold flex items-center justify-center"

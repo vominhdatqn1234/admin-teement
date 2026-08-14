@@ -267,6 +267,16 @@ export default function Finance() {
     };
   }, [sellerStats]);
 
+  /** Số SHOP còn dư nợ (chưa gạch hết) — hiện badge trên tab */
+  const debtShopCount = useMemo(
+    () =>
+      sellerStats.reduce(
+        (n, x) => n + x.storeStats.filter((st) => st.debt > 0.005).length,
+        0
+      ),
+    [sellerStats]
+  );
+
   // Seller đã sắp xếp: nợ nhiều lên đầu
   const sortedStats = useMemo(
     () =>
@@ -452,7 +462,19 @@ export default function Finance() {
               : "bg-transparent text-gray-500"
           }`}
         >
-          Phân rã theo Seller & Shop
+          Phân rã theo Seller &amp; Shop
+          {debtShopCount > 0 && (
+            <span
+              title={`${debtShopCount} shop chưa gạch nợ`}
+              className={`ml-2 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold ${
+                tab === "breakdown"
+                  ? "bg-white text-[#171826]"
+                  : "bg-[#DC2626] text-white"
+              }`}
+            >
+              {debtShopCount}
+            </span>
+          )}
         </button>
         <button
           onClick={() => setTab("history")}
@@ -463,6 +485,18 @@ export default function Finance() {
           }`}
         >
           Lịch sử duyệt gạch nợ toàn cục
+          {entries.length > 0 && (
+            <span
+              title={`${entries.length} lượt gạch nợ đã ghi nhận`}
+              className={`ml-2 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold ${
+                tab === "history"
+                  ? "bg-white text-[#171826]"
+                  : "bg-gray-200 text-gray-600"
+              }`}
+            >
+              {entries.length}
+            </span>
+          )}
         </button>
         <button
           onClick={() => setTab("recon")}
@@ -473,6 +507,18 @@ export default function Finance() {
           }`}
         >
           Đối chiếu ID đơn
+          {reconMissing.length > 0 && (
+            <span
+              title={`${reconMissing.length} mã không tìm thấy đơn`}
+              className={`ml-2 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold ${
+                tab === "recon"
+                  ? "bg-white text-[#171826]"
+                  : "bg-[#DC2626] text-white"
+              }`}
+            >
+              {reconMissing.length}
+            </span>
+          )}
         </button>
       </div>
 

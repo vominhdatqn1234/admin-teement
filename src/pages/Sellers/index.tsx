@@ -925,11 +925,13 @@ export default function Sellers() {
     setExportingFactory(true);
     try {
       const stamp = dayjs().format("YYYY-MM-DD_HHmm");
-      const lines = exportFactoryXlsx(list, {
+      // Mỗi nhà in 1 file theo đúng template file mẫu của nhà in đó
+      const { files } = exportFactoryXlsx(list, {
         findVariantId,
         staffLabel: (assignee) => staffLabels(assignee, employees),
-        fileName: `don-gui-xuong_${stamp}.xlsx`,
+        stamp,
       });
+      const lines = files.reduce((n, f) => n + f.lines, 0);
       const now = new Date().toISOString();
       const fresh = list.filter((o) => !String(o.sentToFactoryAt || "").trim());
       if (fresh.length) {
@@ -954,7 +956,9 @@ export default function Sellers() {
       if (fresh.length || toShipping.length)
         qc.invalidateQueries(["adm-orders"]);
       message.success(
-        `Đã xuất ${list.length} đơn (${lines} dòng sản phẩm)` +
+        `Đã xuất ${files.length} file — ${files
+          .map((f) => `${f.house} (mẫu ${f.template}): ${f.lines} dòng`)
+          .join(" · ")} · tổng ${list.length} đơn / ${lines} dòng` +
           (fresh.length ? ` · đánh dấu ${fresh.length} đơn đã chuyển xưởng` : "") +
           (toShipping.length
             ? ` · ${toShipping.length} đơn Đang sản xuất → Đang giao hàng`
@@ -1656,6 +1660,9 @@ export default function Sellers() {
           title={
             <div className="text-xs leading-5">
               Xuất .xlsx đúng mẫu sheet của xưởng (mỗi sản phẩm 1 dòng).
+              <br />
+              Mỗi nhà in xuất <b>1 file riêng theo đúng mẫu của nhà in đó</b>{" "}
+              (AK2 = 41 cột, FlashShip = 32 cột).
               <br />
               Đơn trong file được đánh dấu <b>đã chuyển xưởng</b>; đơn đang ở{" "}
               <b>Đang sản xuất</b> sẽ tự chuyển sang <b>Đang giao hàng</b> (các

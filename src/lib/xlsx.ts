@@ -142,11 +142,16 @@ class StyleRegistry {
   }
 }
 
+export interface SheetOptions {
+  sheetName?: string;
+  widths?: number[];
+}
+
 function sheetXml(
   rows: SheetRow[],
   styles: StyleRegistry,
   links: { ref: string; target: string }[],
-  opts: { widths?: number[]; sheetName: string }
+  opts: SheetOptions & { sheetName: string }
 ): string {
   const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
   const cols = (opts.widths || []).length
@@ -317,18 +322,12 @@ function zip(files: { name: string; data: string }[]): Blob {
 
 /* -------------------------------- Public -------------------------------- */
 
-export function buildXlsx(
-  rows: SheetRow[],
-  opts: { sheetName?: string; widths?: number[] } = {}
-): Blob {
+export function buildXlsx(rows: SheetRow[], opts: SheetOptions = {}): Blob {
   const sheetName = (opts.sheetName || "Sheet1").slice(0, 31);
   const styles = new StyleRegistry();
   const links: { ref: string; target: string }[] = [];
   // Phải sinh sheet TRƯỚC để gom đủ style + link rồi mới xuất styles/rels
-  const sheet = sheetXml(rows, styles, links, {
-    widths: opts.widths,
-    sheetName,
-  });
+  const sheet = sheetXml(rows, styles, links, { ...opts, sheetName });
   const files: { name: string; data: string }[] = [];
   if (links.length) {
     files.push({
@@ -389,7 +388,7 @@ ${links
 export function downloadXlsx(
   filename: string,
   rows: SheetRow[],
-  opts: { sheetName?: string; widths?: number[] } = {}
+  opts: SheetOptions = {}
 ) {
   const blob = buildXlsx(rows, opts);
   const url = URL.createObjectURL(blob);

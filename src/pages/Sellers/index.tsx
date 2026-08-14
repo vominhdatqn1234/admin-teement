@@ -45,6 +45,7 @@ import {
   usePrintHouses,
   usePrintHouseSkus,
   useSellerCascade,
+  useTrackings,
   useSellerMutations,
   useSellers,
   useStoreCascade,
@@ -52,7 +53,7 @@ import {
   useStores,
 } from "../../hooks/useAdmin";
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
-import { sbUpdateMany, sbUpsert } from "../../lib/supabase";
+import { sbDeleteMany, sbUpdateMany, sbUpsert } from "../../lib/supabase";
 import { useQueryClient } from "react-query";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -360,6 +361,16 @@ const PrintAreaItemCell = memo(function PrintAreaItemCell({
   );
 });
 
+/** Sinh id cho dòng trackings mới (giống lib/db) */
+function genTrackingId(): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "";
+  for (let i = 0; i < 20; i++)
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  return id;
+}
+
 function money(n: number) {
   return `$${(n || 0).toFixed(2)}`;
 }
@@ -372,6 +383,9 @@ export default function Sellers() {
   const { employees } = useCsEmployees();
   // "Add ID" bên tab Quản lý nhân viên: mã đơn khách báo trước + ghi chú thay đổi
   const { pendingIds } = usePendingOrderIds();
+  // Bảng tracking dùng chung với tab "Quản lý Tracking" — mọi thay đổi tracking
+  // bên này đều đồng bộ ngược lại bảng đó.
+  const { trackings } = useTrackings();
   const pendingMut = usePendingOrderIdMutations();
   const pendingByCode = useMemo(() => {
     const m = new Map<string, any>();
@@ -414,7 +428,7 @@ export default function Sellers() {
   const [filterSeller, setFilterSeller] = useState<string>("");
   const [filterShop, setFilterShop] = useState<string>("");
   const [trackingFilter, setTrackingFilter] = useState<
-    "all" | "missing" | "available"
+    "all" | "missing" | "available" | "real" | "fake"
   >("all");
   const [printHouseFilter, setPrintHouseFilter] = useState("");
   const [productFilter, setProductFilter] = useState("");
@@ -561,12 +575,20 @@ export default function Sellers() {
 
   // Lọc theo MỌI điều kiện trừ tab trạng thái -> dùng để đếm số trên từng tab
   const baseFiltered = useMemo(() => {
-    return orders.filter((o) => {
+    // skipTracking = true -> bỏ qua bộ lọc TRACKING (dùng để đếm badge từng mức)
+    const match = (o: PodOrder, skipTracking = false) => {
       if (filterSeller && o.userId !== filterSeller) return false;
       if (filterShop && o.storeId !== filterShop) return false;
       const hasTracking = Boolean(String(o.tracking || "").trim());
-      if (trackingFilter === "missing" && hasTracking) return false;
-      if (trackingFilter === "available" && !hasTracking) return false;
+      if (!skipTracking) {
+        if (trackingFilter === "missing" && hasTracking) return false;
+        if (trackingFilter === "available" && !hasTracking) return false;
+        // Tracking thật / giả (đơn không đánh dấu = tracking thật)
+        if (trackingFilter === "fake" && !(hasTracking && o.trackingFake))
+          return false;
+        if (trackingFilter === "real" && !(hasTracking && !o.trackingFake))
+          return false;
+      }
       const hasPrintHouse = Boolean(String(o.printHouse || "").trim());
       if (printHouseFilter === "__unassigned__" && hasPrintHouse) return false;
       if (printHouseFilter === "__assigned__" && !hasPrintHouse) return false;
@@ -611,7 +633,12 @@ export default function Sellers() {
       if (toDate && dayjs(o.created).isAfter(dayjs(toDate), "day"))
         return false;
       return true;
-    });
+    };
+    return {
+      list: orders.filter((o) => match(o)),
+      /** Bỏ điều kiện TRACKING — để đếm số cho từng nút lọc tracking */
+      noTracking: orders.filter((o) => match(o, true)),
+    };
   }, [
     orders,
     filterSeller,
@@ -630,19 +657,35 @@ export default function Sellers() {
   const filtered = useMemo(
     () =>
       statusTab === "all"
-        ? baseFiltered
-        : baseFiltered.filter((o) => o.status === statusTab),
+        ? baseFiltered.list
+        : baseFiltered.list.filter((o) => o.status === statusTab),
     [baseFiltered, statusTab]
   );
 
   /** Số đơn của từng tab trạng thái (theo các bộ lọc đang áp dụng) */
   const tabCounts = useMemo(() => {
-    const c: Record<string, number> = { all: baseFiltered.length };
-    baseFiltered.forEach((o) => {
+    const c: Record<string, number> = { all: baseFiltered.list.length };
+    baseFiltered.list.forEach((o) => {
       c[o.status] = (c[o.status] || 0) + 1;
     });
     return c;
   }, [baseFiltered]);
+
+  /** Số đơn cho từng nút lọc TRACKING (theo tab trạng thái + các bộ lọc khác) */
+  const trackingCounts = useMemo(() => {
+    const list =
+      statusTab === "all"
+        ? baseFiltered.noTracking
+        : baseFiltered.noTracking.filter((o) => o.status === statusTab);
+    const has = list.filter((o) => String(o.tracking || "").trim());
+    return {
+      all: list.length,
+      missing: list.length - has.length,
+      available: has.length,
+      real: has.filter((o) => !o.trackingFake).length,
+      fake: has.filter((o) => o.trackingFake).length,
+    } as Record<string, number>;
+  }, [baseFiltered, statusTab]);
 
   // ---- Bảng giá phôi + tính Lợi nhuận (Đơn giá − Giá nhà in) ----
   const { variants } = usePodVariants();
@@ -1124,11 +1167,15 @@ export default function Sellers() {
       // các trạng thái khác -> chuyển Đang giao hàng như cũ.
       const next = order.status === "shipping" ? "completed" : "shipping";
       if (next === "completed") done++;
+      const trackNo = String(tracking).trim();
+      // File tracking import về mặc định là tracking THẬT
       await orderMut.update.mutateAsync({
         id: order.id,
-        tracking: String(tracking).trim(),
+        tracking: trackNo,
+        trackingFake: false,
         status: next,
-      });
+      } as any);
+      await syncTrackingRow(order.orderCode, trackNo, false);
       count++;
     }
     message.success(
@@ -1174,21 +1221,74 @@ export default function Sellers() {
     );
   };
 
-  const saveTracking = async (o: PodOrder, tracking: string) => {
+  /**
+   * Ghi tracking của đơn sang bảng "trackings" (tab Quản lý Tracking).
+   * Có dòng cùng Order ID -> cập nhật, chưa có -> tạo mới. Xoá tracking khỏi
+   * đơn thì chỉ xoá mã, giữ dòng để còn lịch sử.
+   */
+  const syncTrackingRow = async (
+    orderCode: string,
+    tracking: string,
+    fake: boolean
+  ) => {
+    const code = String(orderCode || "").trim();
+    if (!code) return;
+    const existed = trackings.find(
+      (t) => String(t.orderId || "").trim() === code
+    );
+    // Xoá trắng mã tracking ở đơn -> xoá luôn dòng bên Quản lý Tracking
+    if (!tracking) {
+      if (existed) await sbDeleteMany("trackings", [existed.id]);
+    } else {
+      await sbUpsert("trackings", [
+        {
+          id: existed?.id || genTrackingId(),
+          orderId: code,
+          tracking,
+          carrier: existed?.carrier || "",
+          fake,
+          created: existed?.created || new Date().toISOString(),
+        },
+      ]);
+    }
+    qc.invalidateQueries(["adm-trackings"]);
+  };
+
+  /** Đổi nhãn tracking thật <-> giả cho 1 đơn */
+  const toggleTrackingFake = async (o: PodOrder) => {
+    const fake = !o.trackingFake;
+    await orderMut.update.mutateAsync({ id: o.id, trackingFake: fake } as any);
+    await syncTrackingRow(o.orderCode, o.tracking || "", fake);
+    message.success(
+      `Đơn ${o.orderCode}: ${fake ? "đánh dấu TRACKING GIẢ" : "tracking thật"}`
+    );
+  };
+
+  const saveTracking = async (o: PodOrder, tracking: string, fake?: boolean) => {
     // Đơn đang giao hàng mà có tracking -> coi như xong, chuyển HOÀN THÀNH
     const toCompleted = !!tracking && o.status === "shipping";
     await orderMut.update.mutateAsync({
       id: o.id,
       tracking,
+      // Xoá tracking thì reset luôn cờ giả
+      trackingFake: tracking ? !!fake : false,
       ...(toCompleted ? { status: "completed" } : {}),
     } as any);
+    await syncTrackingRow(o.orderCode, tracking, tracking ? !!fake : false);
     message.success(
       tracking
-        ? `Đã lưu tracking cho đơn ${o.orderCode}` +
+        ? `Đã lưu tracking ${fake ? "GIẢ" : "thật"} cho đơn ${o.orderCode}` +
+            " · đã đồng bộ sang Quản lý Tracking" +
             (toCompleted ? " · chuyển Hoàn thành" : "")
-        : `Đã xóa tracking đơn ${o.orderCode}`
+        : `Đã xóa tracking đơn ${o.orderCode} · gỡ khỏi Quản lý Tracking`
     );
   };
+
+  /* Nhập tracking nhanh -> hỏi admin xác nhận thật/giả trước khi lưu */
+  const [trackingAsk, setTrackingAsk] = useState<{
+    order: PodOrder;
+    tracking: string;
+  } | null>(null);
 
   // Giá đối chiếu: chỉ lưu để so sánh với Tổng, không đụng tới tổng tiền/công nợ.
   const saveComparePrice = async (o: PodOrder, value: number | null) => {
@@ -1508,6 +1608,8 @@ export default function Sellers() {
               { key: "all", label: "Tất cả" },
               { key: "missing", label: "Chưa có tracking" },
               { key: "available", label: "Đã có tracking" },
+              { key: "real", label: "Tracking thật" },
+              { key: "fake", label: "Tracking giả" },
             ].map((item) => (
               <button
                 key={item.key}
@@ -1523,6 +1625,19 @@ export default function Sellers() {
                 }`}
               >
                 {item.label}
+                {trackingCounts[item.key] ? (
+                  <span
+                    className={`ml-1.5 inline-flex items-center justify-center min-w-[17px] h-[17px] px-1 rounded-full text-[10px] font-bold ${
+                      trackingFilter === item.key
+                        ? "bg-white text-[#171826]"
+                        : item.key === "fake"
+                        ? "bg-[#FDECEC] text-[#B91C1C]"
+                        : "bg-gray-100 text-gray-600"
+                    }`}
+                  >
+                    {trackingCounts[item.key]}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>
@@ -2338,15 +2453,15 @@ export default function Sellers() {
                       </td>
                       {/* DTF/DTG — field riêng, admin tự nhập */}
                       <td className="p-3">
-                        <Input
+                        <input
                           key={o.dtfDtg || ""}
-                          size="small"
                           placeholder="DTF/DTG..."
                           defaultValue={o.dtfDtg || ""}
-                          className="w-[110px]"
-                          onPressEnter={(e) =>
-                            (e.target as HTMLInputElement).blur()
-                          }
+                          className="w-[110px] h-[24px] px-2 text-[13px] rounded-md border border-gray-300 outline-none focus:border-[#2563EB]"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              (e.target as HTMLInputElement).blur();
+                          }}
                           onBlur={(e) => {
                             const v = e.target.value.trim();
                             if (v !== (o.dtfDtg || "")) saveDtfDtg(o, v);
@@ -2355,31 +2470,61 @@ export default function Sellers() {
                       </td>
                       <td className="p-3">
                         {/* Cho sửa tracking ở MỌI trạng thái đơn */}
-                        <Input
+                        {/* input thuần + title: gõ mã tracking không bị giật
+                            (antd Input + Tooltip portal phải tính lại vị trí
+                            trên bảng rất rộng sau mỗi phím) */}
+                        <input
                           key={o.tracking || ""}
-                          size="small"
                           placeholder="Nhập mã tracking..."
                           defaultValue={o.tracking || ""}
-                          className="w-[150px]"
-                          onPressEnter={(e) =>
-                            (e.target as HTMLInputElement).blur()
+                          title={
+                            o.tracking && o.trackingFake
+                              ? "TRACKING GIẢ — bấm nhãn bên dưới để đổi lại thật"
+                              : "Tracking thật"
                           }
+                          className={`w-[150px] h-[24px] px-2 text-[13px] rounded-md border outline-none transition-colors focus:border-[#2563EB] ${
+                            o.tracking && o.trackingFake
+                              ? "border-[#F5C2C2] bg-[#FDECEC] text-[#B91C1C] font-bold"
+                              : "border-gray-300 bg-white"
+                          }`}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              (e.target as HTMLInputElement).blur();
+                          }}
                           onBlur={(e) => {
                             const v = e.target.value.trim();
-                            if (v !== (o.tracking || "")) saveTracking(o, v);
+                            if (v === (o.tracking || "")) return;
+                            // Có mã mới -> hỏi thật/giả; xoá trắng -> lưu luôn
+                            if (v) setTrackingAsk({ order: o, tracking: v });
+                            else saveTracking(o, "");
                           }}
                         />
+                        {o.tracking ? (
+                          <button
+                            title="Bấm để đổi tracking thật / giả"
+                            onClick={() => toggleTrackingFake(o)}
+                            className={`mt-1 block text-[10px] font-bold rounded px-1.5 py-0.5 border-0 cursor-pointer ${
+                              o.trackingFake
+                                ? "bg-[#FDECEC] text-[#B91C1C]"
+                                : "bg-[#E8F7EC] text-[#15803D]"
+                            }`}
+                          >
+                            {o.trackingFake ? "TRACKING GIẢ" : "Tracking thật"}
+                          </button>
+                        ) : null}
                       </td>
                       {/* Note vấn đề của đơn — có note thì file xuất tô ĐỎ */}
                       <td className="p-3">
-                        <Input.TextArea
+                        <textarea
                           key={o.factoryNote || ""}
-                          size="small"
                           placeholder="Đơn có vấn đề gì..."
                           defaultValue={o.factoryNote || ""}
-                          autoSize={{ minRows: 1, maxRows: 3 }}
-                          className="w-[190px]"
-                          status={o.factoryNote ? "error" : undefined}
+                          rows={1}
+                          className={`w-[190px] px-2 py-1 text-[13px] rounded-md border outline-none resize-y focus:border-[#2563EB] ${
+                            o.factoryNote
+                              ? "border-[#F5C2C2] bg-[#FDECEC]"
+                              : "border-gray-300"
+                          }`}
                           onBlur={(e) => {
                             const v = e.target.value.trim();
                             if (v !== (o.factoryNote || ""))
@@ -2762,6 +2907,50 @@ export default function Sellers() {
             </div>
           </div>
         </div>
+      </Modal>
+
+      {/* Xác nhận tracking thật / giả sau khi nhập nhanh */}
+      <Modal
+        open={!!trackingAsk}
+        width={460}
+        title="Mã tracking này là thật hay giả?"
+        onCancel={() => setTrackingAsk(null)}
+        footer={null}
+      >
+        {trackingAsk && (
+          <div className="space-y-4 pt-1">
+            <div className="text-sm text-gray-600">
+              Đơn <b className="text-[#171826]">{trackingAsk.order.orderCode}</b>
+              <div className="mt-1 font-mono text-[13px] bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 break-all">
+                {trackingAsk.tracking}
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end flex-wrap">
+              <Button onClick={() => setTrackingAsk(null)}>Huỷ</Button>
+              <Button
+                danger
+                onClick={async () => {
+                  const { order, tracking } = trackingAsk;
+                  setTrackingAsk(null);
+                  await saveTracking(order, tracking, true);
+                }}
+              >
+                Tracking giả
+              </Button>
+              <Button
+                type="primary"
+                className="bg-[#15803D]"
+                onClick={async () => {
+                  const { order, tracking } = trackingAsk;
+                  setTrackingAsk(null);
+                  await saveTracking(order, tracking, false);
+                }}
+              >
+                Tracking thật
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal chi tiết đơn */}

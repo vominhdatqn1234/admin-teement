@@ -10,6 +10,8 @@ import {
   Input,
   Pagination,
   Popconfirm,
+  Select,
+  Tooltip,
   message,
 } from "antd";
 import { useMemo, useRef, useState } from "react";
@@ -52,7 +54,12 @@ export default function Tracking() {
   const [pageSize, setPageSize] = useState(50);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [addOpen, setAddOpen] = useState(false);
-  const [draft, setDraft] = useState({ orderId: "", tracking: "", carrier: "" });
+  const [draft, setDraft] = useState({
+    orderId: "",
+    tracking: "",
+    carrier: "",
+    fake: false,
+  });
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -73,7 +80,7 @@ export default function Tracking() {
 
   // Áp tracking vào đơn hàng trùng Order ID (orderCode) -> Đang giao hàng
   const applyToOrders = async (
-    rows: { orderId: string; tracking: string }[]
+    rows: { orderId: string; tracking: string; fake?: boolean }[]
   ) => {
     let applied = 0;
     for (const r of rows) {
@@ -82,8 +89,9 @@ export default function Tracking() {
       await orderMut.update.mutateAsync({
         id: order.id,
         tracking: r.tracking,
+        trackingFake: !!r.fake,
         status: "shipping",
-      });
+      } as any);
       applied++;
     }
     return applied;
@@ -109,6 +117,10 @@ export default function Tracking() {
         orderId,
         tracking,
         carrier: col(r, "Nhà vận chuyển", "Carrier", "carrier"),
+        // Cột "Loại tracking"/"Fake": ghi "giả|fake|1|true" -> tracking giả
+        fake: /gi[aả]|fake|^1$|true/i.test(
+          col(r, "Loại tracking", "Fake", "fake") || ""
+        ),
         created: now,
       });
     }
@@ -135,8 +147,13 @@ export default function Tracking() {
     downloadCSV(
       "tracking.csv",
       toCSV(
-        ["Order ID", "Track", "Nhà vận chuyển"],
-        filtered.map((t) => [t.orderId || "", t.tracking || "", t.carrier || ""])
+        ["Order ID", "Track", "Nhà vận chuyển", "Loại tracking"],
+        filtered.map((t) => [
+          t.orderId || "",
+          t.tracking || "",
+          t.carrier || "",
+          t.fake ? "Tracking giả" : "Tracking thật",
+        ])
       )
     );
     message.success(`Đã xuất ${filtered.length} dòng`);
@@ -153,6 +170,7 @@ export default function Tracking() {
         orderId,
         tracking: draft.tracking.trim(),
         carrier: draft.carrier.trim(),
+        fake: draft.fake,
         created: new Date().toISOString(),
       },
     ]);
@@ -163,8 +181,22 @@ export default function Tracking() {
     message.success(
       `Đã thêm tracking cho ${orderId}${applied ? " — áp vào đơn hàng luôn" : ""}`
     );
-    setDraft({ orderId: "", tracking: "", carrier: "" });
+    setDraft({ orderId: "", tracking: "", carrier: "", fake: false });
     setAddOpen(false);
+  };
+
+  /** Đổi thật/giả -> lưu tracking + đồng bộ cờ sang đơn trùng Order ID */
+  const saveFake = async (t: TrackingRow, fake: boolean) => {
+    await update.mutateAsync({ id: t.id, fake } as any);
+    const order = orders.find((o) => o.orderCode === (t.orderId || "").trim());
+    if (order)
+      await orderMut.update.mutateAsync({
+        id: order.id,
+        trackingFake: fake,
+      } as any);
+    message.success(
+      `${t.orderId}: đánh dấu ${fake ? "TRACKING GIẢ" : "tracking thật"}`
+    );
   };
 
   const saveField = (t: TrackingRow, field: string, value: string) => {
@@ -272,6 +304,15 @@ export default function Tracking() {
             value={draft.carrier}
             onChange={(e) => setDraft((d) => ({ ...d, carrier: e.target.value }))}
           />
+          <Select
+            className="w-[150px]"
+            value={draft.fake ? "fake" : "real"}
+            options={[
+              { value: "real", label: "Tracking thật" },
+              { value: "fake", label: "Tracking giả" },
+            ]}
+            onChange={(v) => setDraft((d) => ({ ...d, fake: v === "fake" }))}
+          />
           <Button type="primary" className="bg-[#171826]" onClick={addRow}>
             Lưu
           </Button>
@@ -302,6 +343,11 @@ export default function Tracking() {
               <th className="p-2.5 font-medium">Order ID</th>
               <th className="p-2.5 font-medium">Tracking</th>
               <th className="p-2.5 font-medium">Nhà vận chuyển</th>
+              <th className="p-2.5 font-medium">
+                <Tooltip title="Mặc định là tracking THẬT. Bật sang GIẢ nếu là mã mua tạm — bên Quản lý Seller sẽ tô sáng cảnh báo.">
+                  <span className="cursor-help">Loại tracking</span>
+                </Tooltip>
+              </th>
               <th className="p-2.5 font-medium">Khớp đơn hàng</th>
               <th className="p-2.5 font-medium w-14"></th>
             </tr>
@@ -364,6 +410,18 @@ export default function Tracking() {
                         const v = e.target.value.trim();
                         if (v !== (t.carrier || "")) saveField(t, "carrier", v);
                       }}
+                    />
+                  </td>
+                  <td className="p-1.5">
+                    <Select
+                      size="small"
+                      className="w-[130px]"
+                      value={t.fake ? "fake" : "real"}
+                      options={[
+                        { value: "real", label: "Tracking thật" },
+                        { value: "fake", label: "Tracking giả" },
+                      ]}
+                      onChange={(v) => saveFake(t, v === "fake")}
                     />
                   </td>
                   <td className="p-2.5">

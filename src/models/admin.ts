@@ -164,6 +164,8 @@ export interface PodOrder {
   sentToFactoryAt?: string;
   /** Ghi chú khi đơn có vấn đề — hiện đỏ trong file xuất */
   factoryNote?: string;
+  /** Tracking của đơn là GIẢ (mặc định false = thật) */
+  trackingFake?: boolean;
   /** Kiểu in admin nhập cho đơn (DTF/DTG) — xuất ra cột DTF/DTG */
   dtfDtg?: string;
   /** Card Code admin nhập — xuất ra cột Card Code */
@@ -322,6 +324,8 @@ export interface TrackingRow {
   orderId?: string;
   tracking?: string;
   carrier?: string;
+  /** true = tracking GIẢ (mặc định false = tracking thật) */
+  fake?: boolean;
   created?: string;
 }
 

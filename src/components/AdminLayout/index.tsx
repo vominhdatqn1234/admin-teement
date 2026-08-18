@@ -95,22 +95,33 @@ export default function AdminLayout() {
     const sellerIds = new Set(
       sellers.filter((s) => s.permission !== "Admin").map((s) => s.id)
     );
+    // Gom sẵn theo shop (1 lượt) thay vì lọc lại toàn bộ đơn/ledger cho từng
+    // shop — kết quả không đổi, chỉ nhanh hơn khi có nhiều shop + nhiều đơn.
+    const sellerById = new Map(sellers.map((s) => [s.id, s]));
+    const paidByStore = new Map<string, { count: number; total: number }>();
+    orders.forEach((o) => {
+      if (!PAID_STATUSES.includes(o.status)) return;
+      const k = o.storeId || "";
+      const cur = paidByStore.get(k) || { count: 0, total: 0 };
+      cur.count += 1;
+      cur.total += o.total || 0;
+      paidByStore.set(k, cur);
+    });
+    const matchedByStore = new Map<string, number>();
+    entries.forEach((e) => {
+      const k = e.storeId || "";
+      matchedByStore.set(k, (matchedByStore.get(k) || 0) + (e.amount || 0));
+    });
     return stores.filter((store) => {
       if (store.userId && !sellerIds.has(store.userId)) return false;
-      const seller = sellers.find((s) => s.id === store.userId);
+      const seller = store.userId ? sellerById.get(store.userId) : undefined;
       const extraPerOrder =
         (seller?.markup || 0) +
         (seller?.perOrderFee || 0) -
         (seller?.discount || 0);
-      const storeOrders = orders.filter(
-        (o) => o.storeId === store.id && PAID_STATUSES.includes(o.status)
-      );
-      const revenue =
-        storeOrders.reduce((s, o) => s + (o.total || 0), 0) +
-        extraPerOrder * storeOrders.length;
-      const matched = entries
-        .filter((e) => e.storeId === store.id)
-        .reduce((s, e) => s + (e.amount || 0), 0);
+      const paid = paidByStore.get(store.id) || { count: 0, total: 0 };
+      const revenue = paid.total + extraPerOrder * paid.count;
+      const matched = matchedByStore.get(store.id) || 0;
       return revenue - matched > 0.005;
     }).length;
   }, [sellers, stores, orders, entries]);

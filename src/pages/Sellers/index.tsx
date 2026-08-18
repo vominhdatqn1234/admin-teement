@@ -400,15 +400,31 @@ export default function Sellers() {
     return m;
   }, [pendingIds]);
   const { colors: podColors } = usePodColors();
+  // Tra cứu bằng Map thay vì .find() — 2 hàm này bị gọi cho TỪNG sản phẩm của
+  // TỪNG đơn nên quét mảng mỗi lần sẽ rất chậm khi có vài nghìn đơn.
+  const productBySku = useMemo(() => {
+    const m = new Map<string, (typeof products)[number]>();
+    products.forEach((p) => {
+      if (!m.has(p.sku)) m.set(p.sku, p);
+    });
+    return m;
+  }, [products]);
   // Tên phôi trong Kho Phôi POD theo SKU (vd TM-000-16 -> T-Shirt Comfort)
   const blankName = (sku?: string) =>
-    products.find((p) => p.sku === sku)?.name || sku || "Unknown";
+    productBySku.get(sku || "")?.name || sku || "Unknown";
+  const colorHexByName = useMemo(() => {
+    const m = new Map<string, string>();
+    podColors.forEach((c) => {
+      const k = c.name.trim().toLowerCase();
+      if (!m.has(k) && c.hex) m.set(k, c.hex);
+    });
+    return m;
+  }, [podColors]);
   // Màu item -> hex làm nền thiết kế (ưu tiên bảng Mã màu phôi)
   const colorCss = (name?: string): string | undefined => {
     if (!name) return undefined;
     const k = name.trim().toLowerCase();
-    const db = podColors.find((c) => c.name.trim().toLowerCase() === k);
-    return db?.hex || DEFAULT_COLOR_HEX[k] || undefined;
+    return colorHexByName.get(k) || DEFAULT_COLOR_HEX[k] || undefined;
   };
   // Danh sách option dựng 1 lần — dropdown màu/phôi có hàng trăm dòng,
   // nếu map lại mỗi lần render sẽ giật khi cuộn/gõ.
@@ -520,11 +536,17 @@ export default function Sellers() {
     [orders]
   );
 
+  const sellerById = useMemo(() => {
+    const m = new Map<string, Seller>();
+    sellers.forEach((s) => m.set(s.id, s));
+    return m;
+  }, [sellers]);
+
   // 3 loại phí của seller sở hữu đơn — nhập 1 lần cho seller là tự áp cho
   // tất cả đơn thuộc mọi shop của seller đó (kể cả đơn đang chờ duyệt).
   // Tổng đơn = Giá + Markup + Phí xử lý đơn - Ưu đãi.
   const feesOf = (userId?: string) => {
-    const s = sellers.find((x) => x.id === userId);
+    const s = sellerById.get(userId || "");
     const markup = s?.markup || 0;
     const perOrderFee = s?.perOrderFee || 0;
     const discount = s?.discount || 0;
@@ -538,12 +560,6 @@ export default function Sellers() {
 
   // ---- Tìm kiếm nhanh: gom mọi thông tin dễ nhớ của đơn thành 1 chuỗi ----
   // Gõ nhiều từ khoá cách nhau bởi dấu cách = phải khớp TẤT CẢ (AND).
-  const sellerById = useMemo(() => {
-    const m = new Map<string, Seller>();
-    sellers.forEach((s) => m.set(s.id, s));
-    return m;
-  }, [sellers]);
-
   const searchIndex = useMemo(() => {
     const m = new Map<string, string>();
     orders.forEach((o: any) => {
@@ -720,18 +736,59 @@ export default function Sellers() {
 
   // ---- Bảng giá phôi + tính Lợi nhuận (Đơn giá − Giá nhà in) ----
   const { variants } = usePodVariants();
+  /**
+   * Bảng giá phôi có hàng nghìn dòng mà findVar bị gọi cho TỪNG sản phẩm của
+   * TỪNG đơn -> quét cả mảng mỗi lần là điểm chậm nhất trang này.
+   * Đánh chỉ mục theo tên phôi + nhớ kết quả đã tra (kết quả giữ NGUYÊN như cũ:
+   * vẫn theo đúng thứ tự gốc của mảng variants).
+   */
+  const variantIndex = useMemo(() => {
+    const m = new Map<string, { v: any; i: number }[]>();
+    variants.forEach((v, i) => {
+      const k = (v.product || "").trim().toLowerCase();
+      if (!k) return;
+      const arr = m.get(k);
+      if (arr) arr.push({ v, i });
+      else m.set(k, [{ v, i }]);
+    });
+    return m;
+  }, [variants]);
+  // Cache kết quả tra cứu, tự làm mới khi bảng giá / kho phôi đổi
+  const findVarCache = useMemo(
+    () => new Map<string, any>(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [variantIndex, productBySku]
+  );
   const findVar = (it: any) => {
     const nrm = (x?: string) => (x || "").trim().toLowerCase();
     const brandCands = [it.productName, blankName(it.productSku), it.productSku]
       .map(nrm)
       .filter(Boolean);
-    const pool = variants.filter((v) => brandCands.includes(nrm(v.product)));
-    if (!pool.length) return undefined;
     const size = nrm(it.size);
-    const bySize = size ? pool.filter((v) => nrm(v.size) === size) : pool;
-    const p2 = bySize.length ? bySize : pool;
     const color = nrm(it.color);
-    return p2.find((v) => nrm(v.color) === color) || p2[0];
+    const cacheKey = `${brandCands.join("|")}##${size}##${color}`;
+    if (findVarCache.has(cacheKey)) return findVarCache.get(cacheKey);
+
+    // Gom các biến thể khớp tên phôi, giữ đúng thứ tự trong mảng gốc
+    const picked: { v: any; i: number }[] = [];
+    const seen = new Set<string>();
+    brandCands.forEach((k) => {
+      if (seen.has(k)) return;
+      seen.add(k);
+      const arr = variantIndex.get(k);
+      if (arr) picked.push(...arr);
+    });
+    picked.sort((a, b) => a.i - b.i);
+    const pool = picked.map((x) => x.v);
+
+    let found: any;
+    if (pool.length) {
+      const bySize = size ? pool.filter((v) => nrm(v.size) === size) : pool;
+      const p2 = bySize.length ? bySize : pool;
+      found = p2.find((v) => nrm(v.color) === color) || p2[0];
+    }
+    findVarCache.set(cacheKey, found);
+    return found;
   };
   // Đơn giá 1 sp theo bảng giá phôi (giá gốc + ship, + vùng in phụ nếu có)
   const itemUnitPrice = (v: any, it: any) => {
@@ -757,7 +814,16 @@ export default function Sellers() {
     return arr.length === 1 ? arr[0] : Math.max(0, ...arr);
   };
   // Lợi nhuận đơn = tổng (Đơn giá − Giá nhà in) cho các sp đã có giá nhà in.
+  // Nhớ kết quả theo id đơn: hàm này được gọi lại nhiều lần (bảng, tooltip,
+  // thống kê lãi/lỗ) trong cùng một lượt render.
+  const profitCache = useMemo(
+    () => new Map<string, any>(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [orders, variantIndex, productBySku]
+  );
   const orderProfit = (o: PodOrder) => {
+    const cached = profitCache.get(o.id);
+    if (cached) return cached;
     let dono = 0;
     let house = 0;
     let hasHouse = false;
@@ -772,12 +838,14 @@ export default function Sellers() {
         dono += itemUnitPrice(v, it) * qty;
       }
     }
-    return {
+    const res = {
       hasHouse: hasHouse && !!o.printHouse,
       house,
       dono,
       profit: dono - house,
     };
+    profitCache.set(o.id, res);
+    return res;
   };
 
   // Thống kê lãi/lỗ trên tập đơn đang lọc

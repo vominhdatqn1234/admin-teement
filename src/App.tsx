@@ -20,7 +20,23 @@ import Staff from "./pages/Staff";
 import StaffChat from "./pages/StaffChat";
 import ShippingPrices from "./pages/ShippingPrices";
 
-const queryClient = new QueryClient();
+/**
+ * Mặc định của react-query: KHÔNG tải lại toàn bộ dữ liệu mỗi lần đổi trang
+ * hoặc quay lại tab trình duyệt (bảng podOrders / podVariants rất lớn).
+ * Dữ liệu được coi là còn "tươi" trong 60 giây; mọi thao tác sửa vẫn gọi
+ * invalidateQueries như cũ nên số liệu hiển thị không đổi.
+ */
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: 60 * 1000,
+      cacheTime: 10 * 60 * 1000,
+      retry: 1,
+    },
+  },
+});
 
 export default function App() {
   return (

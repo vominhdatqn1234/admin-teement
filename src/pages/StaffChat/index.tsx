@@ -5,15 +5,18 @@
  * - Nhân viên: thấy đúng luồng chat của mình, nhận badge đỏ khi admin nhắn,
  *   bấm "Đã xử lý" để báo lại và trả lời trực tiếp trong khung chat.
  */
-import { Button, Empty, Input, Tooltip, message } from "antd";
+import { Empty, Tooltip, message } from "antd";
 import dayjs from "dayjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FiCheck,
   FiCheckCircle,
+  FiChevronRight,
   FiExternalLink,
+  FiHash,
   FiMessageSquare,
   FiSend,
+  FiUser,
 } from "react-icons/fi";
 import { useQueryClient } from "react-query";
 import { useNavigate } from "react-router-dom";
@@ -99,6 +102,7 @@ export default function StaffChat() {
   const [activeId, setActiveId] = useState("");
   const [text, setText] = useState("");
   const [orderCode, setOrderCode] = useState("");
+  const [focused, setFocused] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Nhân viên chỉ có luồng của chính mình; admin chọn nhân viên ở cột trái
@@ -192,8 +196,8 @@ export default function StaffChat() {
           <div
             className={`rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap break-words ${
               mine
-                ? "bg-[#171826] text-white rounded-br-sm"
-                : "bg-gray-100 text-[#171826] rounded-bl-sm"
+                ? "bg-[#171826] text-white rounded-br-sm shadow-[0_6px_16px_-10px_rgba(23,24,38,0.9)]"
+                : "bg-white text-[#171826] rounded-bl-sm border border-gray-200 shadow-sm"
             }`}
           >
             {m.content}
@@ -244,45 +248,81 @@ export default function StaffChat() {
   };
 
   const composer = (
-    <div className="border-t border-gray-100 p-3 space-y-2">
-      <div className="flex items-center gap-2">
-        <Input
-          size="small"
-          className="w-[220px]"
-          placeholder="Mã đơn liên quan (không bắt buộc)..."
-          value={orderCode}
-          onChange={(e) => setOrderCode(e.target.value)}
-        />
-        <span className="text-[11px] text-gray-400">
-          Gắn mã đơn để người nhận bấm mở thẳng đơn đó.
-        </span>
-      </div>
-      <div className="flex items-end gap-2">
-        <Input.TextArea
-          autoSize={{ minRows: 2, maxRows: 5 }}
-          placeholder={
-            isAdmin
-              ? "Nhập vấn đề cần nhân viên xử lý... (Enter để gửi)"
-              : "Trả lời admin... (Enter để gửi)"
-          }
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onPressEnter={(e) => {
-            if (!e.shiftKey) {
-              e.preventDefault();
-              send();
+    <div className="border-t border-gray-100 bg-gradient-to-b from-gray-50/60 to-white p-4">
+      <div
+        className={`rounded-2xl border bg-white p-3 transition-shadow ${
+          focused
+            ? "border-[#171826] shadow-[0_8px_24px_-12px_rgba(23,24,38,0.35)]"
+            : "border-gray-200 shadow-sm hover:shadow-md"
+        }`}
+      >
+        {/* Mã đơn liên quan */}
+        <div className="flex items-center gap-2 flex-wrap mb-2">
+          <div className="inline-flex items-center gap-1.5 rounded-full bg-gray-50 border border-gray-200 pl-3 pr-1 py-1 focus-within:border-[#C6A15B] focus-within:bg-white transition-colors">
+            <FiHash size={12} className="text-gray-400 shrink-0" />
+            <input
+              value={orderCode}
+              onChange={(e) => setOrderCode(e.target.value)}
+              placeholder="Mã đơn liên quan"
+              className="w-[150px] bg-transparent border-0 outline-none text-[12px] text-gray-700 placeholder:text-gray-400 py-0.5"
+            />
+            {orderCode && (
+              <button
+                onClick={() => setOrderCode("")}
+                className="w-5 h-5 rounded-full text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer leading-none"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <span className="text-[11px] text-gray-400">
+            Không bắt buộc — gắn để người nhận bấm mở thẳng đơn đó.
+          </span>
+        </div>
+
+        {/* Ô nhập + nút gửi */}
+        <div className="flex items-end gap-2">
+          <textarea
+            rows={2}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder={
+              isAdmin
+                ? "Nhập vấn đề cần nhân viên xử lý…"
+                : "Trả lời admin…"
             }
-          }}
-        />
-        <Button
-          type="primary"
-          icon={<FiSend />}
-          loading={mut.add.isLoading}
-          onClick={send}
-          className="bg-[#171826] border-0 h-[40px] font-bold"
-        >
-          Gửi
-        </Button>
+            className="flex-1 min-h-[64px] max-h-[160px] resize-none border-0 outline-none text-[14px] leading-6 text-[#171826] placeholder:text-gray-400 bg-transparent px-1"
+          />
+          <Tooltip title={text.trim() ? "Gửi (Enter)" : "Nhập nội dung trước"}>
+            <button
+              onClick={send}
+              disabled={!text.trim() || mut.add.isLoading}
+              className={`h-[42px] px-5 rounded-xl border-0 font-bold text-sm inline-flex items-center gap-2 transition-all ${
+                text.trim() && !mut.add.isLoading
+                  ? "bg-[#171826] text-white cursor-pointer shadow-[0_6px_16px_-6px_rgba(23,24,38,0.6)] hover:-translate-y-[1px]"
+                  : "bg-gray-100 text-gray-400 cursor-not-allowed"
+              }`}
+            >
+              <FiSend size={14} />
+              {mut.add.isLoading ? "Đang gửi..." : "Gửi"}
+            </button>
+          </Tooltip>
+        </div>
+
+        <div className="flex items-center justify-between mt-1 px-1">
+          <span className="text-[11px] text-gray-300">
+            Enter để gửi · Shift + Enter xuống dòng
+          </span>
+          <span className="text-[11px] text-gray-300">{text.length} ký tự</span>
+        </div>
       </div>
     </div>
   );
@@ -303,7 +343,7 @@ export default function StaffChat() {
         </p>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 flex overflow-hidden min-h-[540px]">
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_10px_30px_-20px_rgba(23,24,38,0.45)] flex overflow-hidden min-h-[540px]">
         {/* Cột trái: danh sách nhân viên (chỉ admin) */}
         {isAdmin && (
           <div className="w-[260px] shrink-0 border-r border-gray-100 overflow-y-auto max-h-[70vh]">
@@ -356,7 +396,7 @@ export default function StaffChat() {
 
         {/* Khung chat */}
         <div className="flex-1 min-w-0 flex flex-col">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+          <div className="px-4 py-3 border-b border-gray-100 bg-white flex items-center gap-2 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
             <span className="w-7 h-7 rounded-full bg-[#EEF0FF] text-[#4338CA] text-[11px] font-bold flex items-center justify-center">
               {(isAdmin ? activeStaff?.name || "?" : "A").charAt(0).toUpperCase()}
             </span>
@@ -373,19 +413,25 @@ export default function StaffChat() {
               </div>
             </div>
             {isAdmin && activeStaff && (
-              <Tooltip title="Xem nhân viên & tài khoản">
-                <Button
-                  size="small"
-                  className="ml-auto"
+              <Tooltip title="Mở trang Nhân viên & Tài khoản">
+                <button
                   onClick={() => navigate("/app/staff")}
+                  className="ml-auto group inline-flex items-center gap-2 h-[34px] pl-2 pr-2.5 rounded-full border border-gray-200 bg-white text-[12px] font-semibold text-gray-600 cursor-pointer shadow-sm transition-all hover:border-[#C6A15B] hover:text-[#171826] hover:shadow-[0_6px_16px_-8px_rgba(198,161,91,0.85)] hover:-translate-y-[1px]"
                 >
+                  <span className="w-6 h-6 rounded-full bg-[#FBF6EC] text-[#B79351] flex items-center justify-center shrink-0">
+                    <FiUser size={12} />
+                  </span>
                   Hồ sơ nhân viên
-                </Button>
+                  <FiChevronRight
+                    size={13}
+                    className="text-gray-300 transition-transform group-hover:translate-x-0.5 group-hover:text-[#C6A15B]"
+                  />
+                </button>
               </Tooltip>
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto max-h-[52vh] p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto max-h-[52vh] p-4 space-y-3 bg-[#FAFAFB]">
             {!staffId ? (
               <div className="h-full flex items-center justify-center">
                 <Empty description="Chọn một nhân viên ở cột trái để bắt đầu" />

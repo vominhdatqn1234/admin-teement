@@ -1,7 +1,7 @@
 import { Button, Input, message } from "antd";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAdminAuth } from "../../hooks/useAdminAuth";
+import { homePathOf, roleOf, useAdminAuth } from "../../hooks/useAdminAuth";
 
 export default function Login() {
   const { login, checking } = useAdminAuth();
@@ -11,13 +11,19 @@ export default function Login() {
 
   const handleLogin = async () => {
     if (!email || !password)
-      return message.error("Nhập email và mật khẩu admin");
+      return message.error("Nhập tài khoản và mật khẩu");
     const user = await login(email.trim(), password);
     if (user) {
-      message.success("Đăng nhập admin thành công");
-      navigate("/app/finance");
+      message.success(
+        roleOf(user) === "staff"
+          ? `Xin chào ${user.name || user.username} — đăng nhập nhân viên thành công`
+          : "Đăng nhập admin thành công"
+      );
+      navigate(homePathOf(user));
     } else {
-      message.error("Sai thông tin hoặc tài khoản không có quyền Admin");
+      message.error(
+        "Sai tài khoản / mật khẩu, hoặc tài khoản đã bị khóa"
+      );
     }
   };
 
@@ -38,11 +44,11 @@ export default function Login() {
         <div className="space-y-4">
           <div>
             <div className="text-xs font-medium text-gray-500 mb-1.5">
-              Email admin
+              Email admin hoặc Username nhân viên
             </div>
             <Input
               className="h-[42px] rounded-lg"
-              placeholder="admin@teementpod.com"
+              placeholder="admin@teementpod.com / username"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               onPressEnter={handleLogin}
@@ -70,7 +76,8 @@ export default function Login() {
             Đăng nhập
           </Button>
           <div className="text-[11px] text-gray-400 text-center">
-            Chỉ tài khoản có quyền Admin mới truy cập được portal này
+            Admin đăng nhập bằng email. Nhân viên đăng nhập bằng username do
+            admin cấp — chỉ xem được các trang được phân quyền.
           </div>
         </div>
       </div>

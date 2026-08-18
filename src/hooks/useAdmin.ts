@@ -32,6 +32,7 @@ import {
   Seller,
   ServiceItem,
   ShippingPrice,
+  StaffMessage,
   Store,
 } from "../models/admin";
 
@@ -255,6 +256,26 @@ export function nextEmployeeCode(employees: CsEmployee[]): string {
   return `NV${String(max + 1).padStart(3, "0")}`;
 }
 export const useCsEmployeeMutations = crud(csEmployeesRef, "adm-cs-employees");
+
+/* ---------- Chat nội bộ Admin <-> Nhân viên ---------- */
+const staffMessagesRef = collection(db, "staffMessages");
+
+/**
+ * Toàn bộ tin nhắn nội bộ (cũ -> mới). Refetch mỗi 20s để bên kia nhắn là
+ * thấy gần như ngay, không cần realtime socket.
+ */
+export function useStaffMessages() {
+  const q = useQuery(
+    ["adm-staff-messages"],
+    () => getDocs(query(staffMessagesRef, orderBy("created", "asc"))),
+    { refetchInterval: 20000 }
+  );
+  return { ...q, messages: toList<StaffMessage>(q.data) };
+}
+export const useStaffMessageMutations = crud(
+  staffMessagesRef,
+  "adm-staff-messages"
+);
 
 /* ---------- "Add ID": mã đơn khách gửi trước khi đơn được úp lên ---------- */
 const pendingIdsRef = collection(db, "pendingOrderIds");

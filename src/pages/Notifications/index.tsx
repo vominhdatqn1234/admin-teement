@@ -11,6 +11,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FiBell, FiCheckCircle, FiExternalLink } from "react-icons/fi";
 import { useOrders, useSellers, useStores } from "../../hooks/useAdmin";
+import { useIsAdmin } from "../../hooks/useAdminAuth";
 import { ORDER_STATUS } from "../../models/admin";
 
 /* Trạng thái đã đọc lưu ở localStorage của máy admin:
@@ -73,6 +74,8 @@ function money(n: number) {
 
 export default function Notifications() {
   const navigate = useNavigate();
+  // Nhân viên không được xem cột tiền
+  const canSeeMoney = useIsAdmin();
   const { orders, isLoading } = useOrders();
   const { stores } = useStores();
   const { sellers } = useSellers();
@@ -151,7 +154,9 @@ export default function Notifications() {
                     <th className="p-3 font-medium">Khách hàng</th>
                     <th className="p-3 font-medium">Thanh toán lúc</th>
                     <th className="p-3 font-medium">Trạng thái</th>
-                    <th className="p-3 font-medium text-right">Số tiền</th>
+                    {canSeeMoney && (
+                      <th className="p-3 font-medium text-right">Số tiền</th>
+                    )}
                     <th className="p-3 font-medium w-16"></th>
                   </tr>
                 </thead>
@@ -199,9 +204,11 @@ export default function Notifications() {
                             {st?.label || o.status}
                           </span>
                         </td>
-                        <td className="p-3 text-right font-semibold whitespace-nowrap">
-                          {money(o.total)}
-                        </td>
+                        {canSeeMoney && (
+                          <td className="p-3 text-right font-semibold whitespace-nowrap">
+                            {money(o.total)}
+                          </td>
+                        )}
                         <td className="p-3">
                           <Tooltip title="Mở đơn bên Quản lý Seller">
                             <button

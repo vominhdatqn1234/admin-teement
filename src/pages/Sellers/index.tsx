@@ -52,6 +52,7 @@ import {
   useStoreMutations,
   useStores,
 } from "../../hooks/useAdmin";
+import { isAdminRole, useAdminUser } from "../../hooks/useAdminAuth";
 import { DEFAULT_COLOR_HEX } from "../../lib/colorHex";
 import { sbDeleteMany, sbUpdateMany, sbUpsert } from "../../lib/supabase";
 import { useQueryClient } from "react-query";
@@ -376,6 +377,10 @@ function money(n: number) {
 }
 
 export default function Sellers() {
+  // Nhân viên (staff) KHÔNG được xem các cột tiền: Giá / Phí / Tổng /
+  // Giá đối chiếu. Chỉ tài khoản Admin mới thấy.
+  const adminUser = useAdminUser();
+  const canSeeMoney = isAdminRole(adminUser);
   const { sellers } = useSellers();
   const { stores } = useStores();
   const { orders } = useOrders();
@@ -421,8 +426,34 @@ export default function Sellers() {
   const { removeSeller } = useSellerCascade();
   const storeMut = useStoreMutations();
   const { removeStore } = useStoreCascade();
-  const orderMut = useOrderMutations();
+  const orderMutBase = useOrderMutations();
   const qc = useQueryClient();
+
+  /**
+   * Nhân viên (staff) không được chọn "Nhân viên xử lý" bằng tay — hễ họ thao
+   * tác lên đơn nào (sửa tracking, note, nhà in, duyệt...) thì hệ thống tự gán
+   * tên họ vào đơn đó nếu đơn chưa có ai xử lý. Admin vẫn chọn tay như cũ.
+   */
+  const autoAssign = (vars: any) => {
+    if (canSeeMoney) return vars; // admin
+    if (!vars || !vars.id || vars.csAssignee !== undefined) return vars;
+    const me = String(adminUser?.name || "").trim();
+    if (!me) return vars;
+    const current = String(
+      orders.find((o) => o.id === vars.id)?.csAssignee || ""
+    ).trim();
+    return current ? vars : { ...vars, csAssignee: me };
+  };
+  const orderMut = {
+    ...orderMutBase,
+    update: {
+      ...orderMutBase.update,
+      mutate: (vars: any, opts?: any) =>
+        orderMutBase.update.mutate(autoAssign(vars), opts),
+      mutateAsync: (vars: any, opts?: any) =>
+        orderMutBase.update.mutateAsync(autoAssign(vars), opts),
+    },
+  };
 
   const [statusTab, setStatusTab] = useState("all");
   const [filterSeller, setFilterSeller] = useState<string>("");
@@ -885,11 +916,10 @@ export default function Sellers() {
           "Date",
           "Paid",
           "Tracking",
-          "Price",
-          "Markup",
-          "Order Fee",
-          "Discount",
-          "Total",
+          // Cột tiền: chỉ Admin mới được xuất
+          ...(canSeeMoney
+            ? ["Price", "Markup", "Order Fee", "Discount", "Total"]
+            : []),
         ],
         list.map((o) => {
           const f = feesOf(o.userId);
@@ -931,11 +961,15 @@ export default function Sellers() {
             o.created ? dayjs(o.created).format("DD/MM/YYYY") : "",
             o.datePaid ? dayjs(o.datePaid).format("DD/MM/YYYY") : "Chưa thanh toán",
             o.tracking || "",
-            (o.total || 0).toFixed(2),
-            f.markup.toFixed(2),
-            f.perOrderFee.toFixed(2),
-            f.discount.toFixed(2),
-            ((o.total || 0) + f.extra).toFixed(2),
+            ...(canSeeMoney
+              ? [
+                  (o.total || 0).toFixed(2),
+                  f.markup.toFixed(2),
+                  f.perOrderFee.toFixed(2),
+                  f.discount.toFixed(2),
+                  ((o.total || 0) + f.extra).toFixed(2),
+                ]
+              : []),
           ];
         })
       )
@@ -1511,24 +1545,28 @@ export default function Sellers() {
             e.target.value = "";
           }}
         />
-        <Button
-          icon={<FiUpload />}
-          className="h-[40px] rounded-lg font-medium"
-          onClick={() => compareRef.current?.click()}
-        >
-          Import Giá đối chiếu (CSV)
-        </Button>
-        <input
-          ref={compareRef}
-          type="file"
-          accept=".csv"
-          hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) handleImportComparePrice(f);
-            e.target.value = "";
-          }}
-        />
+        {canSeeMoney && (
+          <>
+            <Button
+              icon={<FiUpload />}
+              className="h-[40px] rounded-lg font-medium"
+              onClick={() => compareRef.current?.click()}
+            >
+              Import Giá đối chiếu (CSV)
+            </Button>
+            <input
+              ref={compareRef}
+              type="file"
+              accept=".csv"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleImportComparePrice(f);
+                e.target.value = "";
+              }}
+            />
+          </>
+        )}
         </div>
       </div>
 
@@ -2144,10 +2182,16 @@ export default function Sellers() {
                   </th>
                   <th className="p-3 font-medium">Nhân viên xử lý</th>
                   <th className="p-3 font-medium">Gửi xưởng</th>
-                  <th className="p-3 font-medium text-right">Giá</th>
-                  <th className="p-3 font-medium text-right">Phí</th>
-                  <th className="p-3 font-medium text-right">Tổng</th>
-                  <th className="p-3 font-medium text-right">Giá đối chiếu</th>
+                  {canSeeMoney && (
+                    <>
+                      <th className="p-3 font-medium text-right">Giá</th>
+                      <th className="p-3 font-medium text-right">Phí</th>
+                      <th className="p-3 font-medium text-right">Tổng</th>
+                      <th className="p-3 font-medium text-right">
+                        Giá đối chiếu
+                      </th>
+                    </>
+                  )}
                   <th className="p-3 font-medium">Thao tác</th>
                 </tr>
               </thead>
@@ -2532,8 +2576,22 @@ export default function Sellers() {
                           }}
                         />
                       </td>
-                      {/* Nhân viên xử lý — chọn từ danh sách hoặc gõ tay */}
+                      {/* Nhân viên xử lý — Admin chọn tay; nhân viên chỉ xem
+                          (tên tự gán khi họ thao tác lên đơn) */}
                       <td className="p-3">
+                        {!canSeeMoney ? (
+                          o.csAssignee ? (
+                            <span className="text-[11px] font-semibold bg-[#EEF0FF] text-[#4338CA] rounded px-2 py-0.5 whitespace-nowrap">
+                              {o.csAssignee}
+                            </span>
+                          ) : (
+                            <Tooltip title="Bạn thao tác lên đơn này thì hệ thống tự gán tên bạn">
+                              <span className="text-[11px] text-gray-300 cursor-help">
+                                Tự gán khi xử lý
+                              </span>
+                            </Tooltip>
+                          )
+                        ) : (
                         <Select
                           size="small"
                           className="w-[150px]"
@@ -2552,6 +2610,7 @@ export default function Sellers() {
                           }
                           onChange={(v) => saveAssignee(o, String(v || ""))}
                         />
+                        )}
                       </td>
                       {/* Tình trạng gửi xưởng — tô màu giống file xuất */}
                       <td className="p-3 whitespace-nowrap">
@@ -2593,6 +2652,8 @@ export default function Sellers() {
                           </button>
                         ) : null}
                       </td>
+                      {canSeeMoney && (
+                        <>
                       <td className="p-3 text-right font-semibold whitespace-nowrap">
                         <Tooltip title={priceTooltip(o)}>
                           <span className="cursor-help inline-flex items-center gap-1">
@@ -2710,6 +2771,8 @@ export default function Sellers() {
                           );
                         })()}
                       </td>
+                        </>
+                      )}
                       <td className="p-3">
                         <div className="flex items-center gap-1.5">
                           <Tooltip title="Chi tiết đơn">
@@ -2757,7 +2820,10 @@ export default function Sellers() {
                 })}
                 {!paged.length && (
                   <tr>
-                    <td colSpan={16} className="p-12 text-center text-gray-400">
+                    <td
+                      colSpan={canSeeMoney ? 16 : 12}
+                      className="p-12 text-center text-gray-400"
+                    >
                       Không có đơn hàng nào
                     </td>
                   </tr>
@@ -3171,6 +3237,15 @@ export default function Sellers() {
                       <div className="text-xs text-gray-500 mb-1">
                         Nhân viên xử lý
                       </div>
+                      {!canSeeMoney ? (
+                        <div className="text-sm text-[#171826]">
+                          {detail.csAssignee || (
+                            <span className="text-gray-300">
+                              Tự gán khi bạn xử lý đơn
+                            </span>
+                          )}
+                        </div>
+                      ) : (
                       <Select
                         size="small"
                         className="w-full"
@@ -3189,11 +3264,14 @@ export default function Sellers() {
                         }
                         onChange={(v) => saveAssignee(detail, String(v || ""))}
                       />
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {(() => {
+                {/* Khối tiền — chỉ Admin mới thấy */}
+                {canSeeMoney &&
+                  (() => {
                   const f = feesOf(detail.userId);
                   return (
                     <div className="text-right space-y-0.5">

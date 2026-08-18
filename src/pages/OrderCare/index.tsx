@@ -14,7 +14,6 @@ import { FiClock, FiRotateCcw } from "react-icons/fi";
 import UploadImgButton from "../../components/UploadImgButton";
 import { imageUrlCandidates } from "../../lib/imageUrl";
 import {
-  nextEmployeeCode,
   useCsEmployeeMutations,
   useCsEmployees,
   useOrderMutations,
@@ -24,7 +23,7 @@ import {
   useSellers,
   useStores,
 } from "../../hooks/useAdmin";
-import { useAdminUser } from "../../hooks/useAdminAuth";
+import { useAdminUser, isAdminRole } from "../../hooks/useAdminAuth";
 import { PendingOrderId, PodOrder } from "../../models/admin";
 
 const CS_STATUS: Record<string, { label: string; color: string; bg: string }> = {
@@ -105,31 +104,13 @@ function LinkCell({
 
 export default function OrderCare() {
   const admin = useAdminUser();
+  const isAdmin = isAdminRole(admin);
   const { orders, isLoading } = useOrders();
   const { sellers } = useSellers();
   const { stores } = useStores();
   const { employees } = useCsEmployees();
   const csEmpMut = useCsEmployeeMutations();
   const orderMut = useOrderMutations();
-  const [newEmp, setNewEmp] = useState("");
-
-  const addEmployee = async () => {
-    const name = newEmp.trim();
-    if (!name) return;
-    if (employees.some((e: any) => e.name.toLowerCase() === name.toLowerCase())) {
-      message.warning("Nhân viên này đã có");
-      setNewEmp("");
-      return;
-    }
-    const code = nextEmployeeCode(employees);
-    await csEmpMut.add.mutateAsync({
-      name,
-      code,
-      created: new Date().toISOString(),
-    });
-    message.success(`Đã tạo nhân viên "${name}" — mã ${code}`);
-    setNewEmp("");
-  };
 
   // Nhân viên cũ chưa có mã -> cấp mã tự động (chạy 1 lần cho mỗi người)
   useEffect(() => {
@@ -152,34 +133,6 @@ export default function OrderCare() {
   /* -------- "Add ID": mã đơn khách gửi trước khi đơn được úp lên -------- */
   const { pendingIds } = usePendingOrderIds();
   const pendingMut = usePendingOrderIdMutations();
-  const [newPendingId, setNewPendingId] = useState("");
-  const [newPendingNote, setNewPendingNote] = useState("");
-
-  const addPendingId = async () => {
-    const code = newPendingId.trim();
-    if (!code) return;
-    if (
-      pendingIds.some(
-        (p) => p.orderCode.trim().toLowerCase() === code.toLowerCase()
-      )
-    ) {
-      message.warning("ID này đã được add rồi");
-      return;
-    }
-    await pendingMut.add.mutateAsync({
-      orderCode: code,
-      note: newPendingNote.trim(),
-      createdBy: reviewer,
-      created: new Date().toISOString(),
-      matchedOrderId: "",
-      matchedAt: "",
-      ackAt: "",
-    });
-    message.success(`Đã add ID "${code}" — sẽ báo khi đơn thật xuất hiện`);
-    setNewPendingId("");
-    setNewPendingNote("");
-  };
-
   // Mã đơn (viết thường) -> bản ghi ID đã add, để gắn badge lên dòng đơn
   const pendingByCode = useMemo(() => {
     const m = new Map<string, PendingOrderId>();
@@ -238,14 +191,28 @@ export default function OrderCare() {
     return (owner && sellerName[owner]) || "—";
   };
 
-  // Ghi mọi thay đổi kèm nhân viên chỉnh sửa + thời điểm.
-  const patchCs = (o: PodOrder, patch: Partial<PodOrder>) =>
-    orderMut.update.mutateAsync({
+  /**
+   * Ghi mọi thay đổi kèm nhân viên chỉnh sửa + thời điểm.
+   * Nhân viên (staff) không chọn "Nhân viên xử lý" bằng tay — hễ thao tác lên
+   * đơn chưa có ai xử lý thì hệ thống tự gán tên họ vào. Admin vẫn chọn tay.
+   */
+  const patchCs = (o: PodOrder, patch: Partial<PodOrder>) => {
+    const me = String(admin?.name || "").trim();
+    const auto =
+      !isAdmin &&
+      me &&
+      (patch as any).csAssignee === undefined &&
+      !String(o.csAssignee || "").trim()
+        ? { csAssignee: me }
+        : {};
+    return orderMut.update.mutateAsync({
       id: o.id,
       ...patch,
+      ...auto,
       csEditedBy: reviewer,
       csEditedAt: new Date().toISOString(),
     } as any);
+  };
 
   // Ship lại = tạo MỘT ĐƠN MỚI HOÀN TOÀN (ID mới), copy dữ liệu đơn hiện tại.
   const doReship = async (o: PodOrder) => {
@@ -349,144 +316,6 @@ export default function OrderCare() {
           Theo dõi và xử lý từng đơn: nhân viên phụ trách, tin nhắn khách, ship
           lại, refund, trạng thái. Mọi chỉnh sửa tự ghi nhận nhân viên.
         </p>
-      </div>
-
-      {/* Tạo nhân viên: danh sách để gán vào cột Nhân viên */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
-        <span className="text-[13px] font-semibold text-[#171826]">
-          Tạo nhân viên:
-        </span>
-        <Input
-          placeholder="Tên nhân viên..."
-          className="w-[220px]"
-          value={newEmp}
-          onChange={(e) => setNewEmp(e.target.value)}
-          onPressEnter={addEmployee}
-        />
-        <Button
-          type="primary"
-          className="bg-[#171826] border-0 font-bold"
-          loading={csEmpMut.add.isLoading}
-          onClick={addEmployee}
-        >
-          + Thêm
-        </Button>
-        {employees.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-gray-400">Đã có:</span>
-            {employees.map((e: any) => (
-              <span
-                key={e.id}
-                className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded-full pl-2.5 pr-1 py-0.5"
-              >
-                {e.name}
-                {e.code && (
-                  <span className="font-mono text-[10px] text-[#4338CA]">
-                    ({e.code})
-                  </span>
-                )}
-                <Popconfirm
-                  title={`Xóa nhân viên "${e.name}"?`}
-                  okText="Xóa"
-                  cancelText="Hủy"
-                  onConfirm={() => csEmpMut.remove.mutate(e.id)}
-                >
-                  <button className="w-4 h-4 rounded-full text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer leading-none">
-                    ×
-                  </button>
-                </Popconfirm>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Add ID: mã đơn khách gửi TRƯỚC khi đơn được úp lên hệ thống */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-4 space-y-2">
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[13px] font-semibold text-[#171826]">
-            Add ID:
-          </span>
-          <Input
-            placeholder="Mã đơn khách gửi trước..."
-            className="w-[220px]"
-            value={newPendingId}
-            onChange={(e) => setNewPendingId(e.target.value)}
-            onPressEnter={addPendingId}
-          />
-          <Input
-            placeholder="Ghi chú (không bắt buộc)..."
-            className="w-[260px]"
-            value={newPendingNote}
-            onChange={(e) => setNewPendingNote(e.target.value)}
-            onPressEnter={addPendingId}
-          />
-          <Button
-            type="primary"
-            className="bg-[#171826] border-0 font-bold"
-            loading={pendingMut.add.isLoading}
-            onClick={addPendingId}
-          >
-            + Thêm ID
-          </Button>
-          <span className="text-xs text-gray-400">
-            Khách báo mã đơn trước khi úp lên — khi đơn thật có mã này vào hệ
-            thống, dòng đơn sẽ hiện badge đỏ để kiểm tra lại.
-          </span>
-        </div>
-        {pendingIds.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-gray-400">Đã add:</span>
-            {pendingIds.map((p) => {
-              const matched = !!p.matchedOrderId;
-              return (
-                <Tooltip
-                  key={p.id}
-                  title={
-                    <div className="text-xs leading-5">
-                      {p.note && <div>Ghi chú: {p.note}</div>}
-                      <div>
-                        Thêm bởi {p.createdBy || "—"}
-                        {p.created
-                          ? ` · ${dayjs(p.created).format("DD/MM/YYYY HH:mm")}`
-                          : ""}
-                      </div>
-                      <div>
-                        {matched
-                          ? `Đã có đơn thật lúc ${dayjs(p.matchedAt).format(
-                              "DD/MM/YYYY HH:mm"
-                            )}`
-                          : "Chưa có đơn thật với mã này"}
-                      </div>
-                    </div>
-                  }
-                >
-                  <span
-                    className={`inline-flex items-center gap-1 text-xs rounded-full pl-2.5 pr-1 py-0.5 ${
-                      matched
-                        ? "bg-[#FDECEC] text-[#B91C1C] font-semibold"
-                        : "bg-gray-100 text-gray-600"
-                    }`}
-                  >
-                    {p.orderCode}
-                    {p.note ? ` · ${p.note}` : ""}
-                    {matched ? " · đã có đơn" : " · chờ"}
-                    <Popconfirm
-                      title={`Xoá ID "${p.orderCode}" khỏi danh sách?`}
-                      okText="Xoá"
-                      cancelText="Hủy"
-                      onConfirm={() => pendingMut.remove.mutate(p.id)}
-                    >
-                      <button className="w-4 h-4 rounded-full text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer leading-none">
-                        ×
-                      </button>
-                    </Popconfirm>
-                  </span>
-                </Tooltip>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* Tabs trạng thái CS */}
@@ -683,21 +512,45 @@ export default function OrderCare() {
                         );
                       })()}
                     </td>
-                    {/* Nhân viên xử lý: chọn nhiều từ danh sách; CHỌN RỒI thì
-                        khóa lại (không cho sửa) — hiển thị dạng thẻ. */}
+                    {/* Nhân viên xử lý: đã gán thì hiển thị dạng thẻ —
+                        chỉ Admin được gỡ nhân viên ra khỏi đơn. */}
                     <td className="p-3 min-w-[180px]">
                       {assigned.length ? (
                         <div className="flex flex-wrap gap-1">
                           {assigned.map((n) => (
                             <span
                               key={n}
-                              className="text-[11px] font-semibold bg-[#EEF0FF] text-[#4338CA] rounded px-2 py-0.5"
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold bg-[#EEF0FF] text-[#4338CA] rounded px-2 py-0.5"
                             >
                               {n}
+                              {isAdmin && (
+                                <Popconfirm
+                                  title={`Bỏ "${n}" khỏi đơn ${o.orderCode}?`}
+                                  okText="Bỏ"
+                                  cancelText="Hủy"
+                                  okButtonProps={{ danger: true }}
+                                  onConfirm={async () => {
+                                    await patchCs(o, {
+                                      csAssignee: assigned
+                                        .filter((x) => x !== n)
+                                        .join(","),
+                                    } as any);
+                                    message.success(
+                                      `Đã bỏ ${n} khỏi đơn ${o.orderCode}`
+                                    );
+                                  }}
+                                >
+                                  <Tooltip title="Bỏ nhân viên này khỏi đơn">
+                                    <button className="w-3.5 h-3.5 rounded-full text-[#4338CA] opacity-50 hover:opacity-100 hover:text-red-500 border-0 bg-transparent cursor-pointer leading-none p-0">
+                                      ×
+                                    </button>
+                                  </Tooltip>
+                                </Popconfirm>
+                              )}
                             </span>
                           ))}
                         </div>
-                      ) : (
+                      ) : isAdmin ? (
                         <Select
                           mode="multiple"
                           size="small"
@@ -713,6 +566,12 @@ export default function OrderCare() {
                             label: e.name,
                           }))}
                         />
+                      ) : (
+                        <Tooltip title="Bạn thao tác lên đơn này thì hệ thống tự gán tên bạn vào">
+                          <span className="text-[11px] text-gray-300 cursor-help">
+                            Tự gán khi xử lý
+                          </span>
+                        </Tooltip>
                       )}
                     </td>
                     <td className="p-3 whitespace-nowrap">{o.storeName || "—"}</td>
@@ -955,6 +814,7 @@ export default function OrderCare() {
           />
         </div>
       )}
+
     </div>
   );
 }

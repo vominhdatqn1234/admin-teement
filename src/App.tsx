@@ -10,11 +10,14 @@ import ImportQueue from "./pages/ImportQueue";
 import Login from "./pages/Login";
 import Notifications from "./pages/Notifications";
 import OrderCare from "./pages/OrderCare";
+import PendingIds from "./pages/PendingIds";
 import PodPrices from "./pages/PodPrices";
 import PrintHouse from "./pages/PrintHouse";
 import Tracking from "./pages/Tracking";
 import Sellers from "./pages/Sellers";
 import Services from "./pages/Services";
+import Staff from "./pages/Staff";
+import StaffChat from "./pages/StaffChat";
 import ShippingPrices from "./pages/ShippingPrices";
 
 const queryClient = new QueryClient();
@@ -31,6 +34,9 @@ export default function App() {
             <Route path="sellers" element={<Sellers />} />
             <Route path="notifications" element={<Notifications />} />
             <Route path="order-care" element={<OrderCare />} />
+            <Route path="staff" element={<Staff />} />
+            <Route path="pending-ids" element={<PendingIds />} />
+            <Route path="staff-chat" element={<StaffChat />} />
             <Route path="import-queue" element={<ImportQueue />} />
             <Route path="services" element={<Services />} />
             <Route path="blanks" element={<Blanks />} />

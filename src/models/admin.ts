@@ -57,6 +57,32 @@ export interface CsEmployee {
   name: string;
   /** Mã nhận dạng, vd NV001 — xuất ra file dạng "Phương(NV001)" */
   code?: string;
+  /** Tài khoản đăng nhập admin portal (admin cấp trong tab Quản lý nhân viên) */
+  username?: string;
+  password?: string;
+  /** false = đã khóa, không đăng nhập được nữa */
+  active?: boolean;
+  created?: string;
+}
+
+/**
+ * Tin nhắn nội bộ Admin <-> Nhân viên. Mỗi dòng thuộc luồng chat của 1 nhân
+ * viên (staffId); senderRole cho biết ai gửi.
+ */
+export interface StaffMessage {
+  id: string;
+  /** csEmployees.id — chủ luồng chat */
+  staffId: string;
+  staffName?: string;
+  senderRole?: "admin" | "staff";
+  senderName?: string;
+  content: string;
+  /** Mã đơn liên quan (không bắt buộc) */
+  orderCode?: string;
+  readByStaff?: boolean;
+  readByAdmin?: boolean;
+  /** Nhân viên bấm "Đã xử lý" lúc nào */
+  doneAt?: string;
   created?: string;
 }
 

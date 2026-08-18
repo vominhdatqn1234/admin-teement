@@ -17,17 +17,30 @@ import {
   FiInbox,
   FiHeadphones,
   FiBell,
+  FiUserCheck,
+  FiHash,
+  FiMessageSquare,
 } from "react-icons/fi";
-import { NavLink, Navigate, Outlet } from "react-router-dom";
-import { useAdminAuth } from "../../hooks/useAdminAuth";
+import { NavLink, Navigate, Outlet, useLocation } from "react-router-dom";
+import {
+  STAFF_PATHS,
+  homePathOf,
+  roleOf,
+  useAdminAuth,
+} from "../../hooks/useAdminAuth";
 import {
   useImportQueue,
   useLedger,
   useOrders,
   usePendingOrderIds,
   useSellers,
+  useStaffMessages,
   useStores,
 } from "../../hooks/useAdmin";
+import {
+  unreadForAdmin,
+  unreadForStaff,
+} from "../../pages/StaffChat";
 import { PAID_STATUSES } from "../../models/admin";
 import { getNotifState, unreadPaidCount } from "../../pages/Notifications";
 
@@ -35,6 +48,9 @@ const EXTENSIONS = [
   { to: "/app/finance", label: "Tài chính & Công nợ", icon: <FiDollarSign /> },
   { to: "/app/sellers", label: "Quản lý Seller", icon: <FiUsers /> },
   { to: "/app/order-care", label: "Quản lý nhân viên", icon: <FiHeadphones /> },
+  { to: "/app/staff", label: "Nhân viên & Tài khoản", icon: <FiUserCheck /> },
+  { to: "/app/pending-ids", label: "Quản lý Add ID", icon: <FiHash /> },
+  { to: "/app/staff-chat", label: "Chat nội bộ", icon: <FiMessageSquare /> },
   { to: "/app/notifications", label: "Thông báo", icon: <FiBell /> },
   { to: "/app/import-queue", label: "Hàng đợi import PDF", icon: <FiInbox /> },
   { to: "/app/services", label: "Dịch vụ mở rộng", icon: <FiFileText /> },
@@ -49,6 +65,12 @@ const EXTENSIONS = [
 
 export default function AdminLayout() {
   const { adminUser, logout } = useAdminAuth();
+  const location = useLocation();
+  const isStaff = roleOf(adminUser) === "staff";
+  // Nhân viên chỉ thấy các trang trong STAFF_PATHS
+  const menus = isStaff
+    ? EXTENSIONS.filter((m) => STAFF_PATHS.includes(m.to))
+    : EXTENSIONS;
   const [collapsed, setCollapsed] = useState(false);
   // Số đơn khách báo ĐỔI THÔNG TIN (đã có đơn thật, chưa bấm đã xử lý)
   const { pendingIds } = usePendingOrderIds();
@@ -93,6 +115,12 @@ export default function AdminLayout() {
     }).length;
   }, [sellers, stores, orders, entries]);
 
+  /* Chat nội bộ: admin đếm tin nhân viên rep, nhân viên đếm tin admin gửi */
+  const { messages: staffMsgs } = useStaffMessages();
+  const chatCount = isStaff
+    ? unreadForStaff(staffMsgs, adminUser?.id || "")
+    : unreadForAdmin(staffMsgs);
+
   /* Thông báo: đơn khách gửi thanh toán sau mốc admin đã xem */
   const [notifState, setNotifState] = useState(getNotifState);
   useEffect(() => {
@@ -111,7 +139,9 @@ export default function AdminLayout() {
 
   /** Số hiện badge đỏ cho từng menu */
   const badgeOf = (to: string) =>
-    to === "/app/order-care"
+    to === "/app/staff-chat"
+      ? chatCount
+      : to === "/app/pending-ids"
       ? changeCount
       : to === "/app/import-queue"
       ? queueCount
@@ -124,6 +154,12 @@ export default function AdminLayout() {
       : 0;
 
   if (!adminUser) return <Navigate to="/login" />;
+  // Nhân viên gõ tay URL trang không được phép -> đưa về trang mặc định
+  if (
+    isStaff &&
+    !STAFF_PATHS.some((p) => location.pathname.startsWith(p))
+  )
+    return <Navigate to={homePathOf(adminUser)} replace />;
 
   return (
     <div className="flex min-h-screen bg-white">
@@ -191,7 +227,7 @@ export default function AdminLayout() {
             </div>
           )}
           <nav className="space-y-0.5">
-            {EXTENSIONS.map((m) => {
+            {menus.map((m) => {
               const link = (
                 <NavLink
                   key={m.to}
@@ -219,8 +255,10 @@ export default function AdminLayout() {
                   {!collapsed && badgeOf(m.to) > 0 && (
                     <span
                       title={
-                        m.to === "/app/order-care"
-                          ? `${changeCount} đơn khách báo đổi thông tin chưa xử lý`
+                        m.to === "/app/staff-chat"
+                          ? `${chatCount} tin nhắn nội bộ chưa đọc`
+                          : m.to === "/app/pending-ids"
+                          ? `${changeCount} mã đã add đã có đơn thật — cần kiểm tra`
                           : m.to === "/app/sellers"
                           ? `${approvalCount} đơn đang chờ duyệt`
                           : m.to === "/app/finance"
@@ -293,8 +331,21 @@ export default function AdminLayout() {
                 {(adminUser.name || "A").charAt(0).toUpperCase()}
               </span>
               {!collapsed && (
-                <span className="text-[12px] text-gray-600 truncate">
-                  {adminUser.email}
+                <span className="min-w-0">
+                  <span className="block text-[12px] text-gray-600 truncate">
+                    {adminUser.email}
+                  </span>
+                  <span
+                    className={`inline-block mt-0.5 text-[9px] font-bold tracking-wider rounded px-1.5 py-[1px] ${
+                      isStaff
+                        ? "bg-[#EEF0FF] text-[#4338CA]"
+                        : "bg-[#E8F7EC] text-[#15803D]"
+                    }`}
+                  >
+                    {isStaff
+                      ? `NHÂN VIÊN${adminUser.code ? ` · ${adminUser.code}` : ""}`
+                      : "ADMIN"}
+                  </span>
                 </span>
               )}
             </div>

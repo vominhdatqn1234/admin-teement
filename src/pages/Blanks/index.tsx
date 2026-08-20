@@ -1,11 +1,13 @@
 import {
   Button,
   Checkbox,
+  Image,
   Input,
   InputNumber,
   Modal,
   Pagination,
   Popconfirm,
+  Popover,
   Progress,
   Select,
   Switch,
@@ -59,6 +61,74 @@ const NO_CATEGORY = "__none__";
 /** So khớp không phân biệt hoa thường / dấu cách thừa */
 function normalize(v?: string) {
   return String(v || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Ảnh phôi trong bảng: rê chuột vào xem ảnh lớn ngay tại chỗ, bấm vào mở
+ * modal xem full (zoom / xoay / tải về của antd).
+ */
+function BlankThumb({ url, alt }: { url?: string; alt: string }) {
+  const [open, setOpen] = useState(false);
+  const src = url ? toDirectImageUrl(url) : "";
+  const [broken, setBroken] = useState(false);
+
+  if (!src || broken)
+    return (
+      <div className="w-11 h-11 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-center">
+        {src ? (
+          <img
+            src={src}
+            alt={alt}
+            referrerPolicy="no-referrer"
+            className="hidden"
+            onError={() => setBroken(true)}
+          />
+        ) : null}
+        <span className="text-[8px] text-gray-300">No img</span>
+      </div>
+    );
+
+  return (
+    <>
+      <Popover
+        placement="right"
+        mouseEnterDelay={0.15}
+        content={
+          <div className="w-[260px]">
+            <img
+              src={src}
+              alt={alt}
+              referrerPolicy="no-referrer"
+              className="w-full h-[260px] object-contain bg-gray-50 rounded-lg"
+            />
+            <div className="text-center text-[11px] text-gray-400 mt-1">
+              Bấm vào ảnh để xem full
+            </div>
+          </div>
+        }
+      >
+        <div
+          onClick={() => setOpen(true)}
+          className="w-11 h-11 bg-gray-50 border border-gray-200 rounded-lg overflow-hidden flex items-center justify-center cursor-zoom-in hover:border-[#2563EB]"
+        >
+          <img
+            src={src}
+            alt={alt}
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover"
+            onError={() => setBroken(true)}
+          />
+        </div>
+      </Popover>
+      {/* Modal xem ảnh full — dùng preview của antd */}
+      <Image
+        src={src}
+        alt={alt}
+        style={{ display: "none" }}
+        preview={{ visible: open, src, onVisibleChange: setOpen }}
+      />
+    </>
+  );
 }
 
 function Field({
@@ -770,22 +840,7 @@ export default function Blanks() {
                   />
                 </td>
                 <td className="p-3">
-                  <div className="w-11 h-11 bg-gray-50 border border-gray-200 rounded-lg overflow-hidden flex items-center justify-center">
-                    {p.image ? (
-                      <img
-                        src={toDirectImageUrl(p.image)}
-                        alt={p.name}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                        onError={(e) =>
-                          ((e.target as HTMLImageElement).style.display =
-                            "none")
-                        }
-                      />
-                    ) : (
-                      <span className="text-[8px] text-gray-300">No img</span>
-                    )}
-                  </div>
+                  <BlankThumb url={p.image} alt={p.name} />
                 </td>
                 <td className="p-3 font-medium text-gray-900">{p.name}</td>
                 <td className="p-3 text-gray-500">{p.sku}</td>

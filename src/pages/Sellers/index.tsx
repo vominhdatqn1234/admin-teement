@@ -3,6 +3,7 @@ import {
   Button,
   Checkbox,
   DatePicker,
+  Image,
   Input,
   InputNumber,
   Modal,
@@ -106,11 +107,14 @@ function DesignLinkCell({
   onCommit: (v: string) => void;
 }) {
   const [idx, setIdx] = useState(0);
+  // Bấm vào ảnh -> mở modal xem full
+  const [preview, setPreview] = useState(false);
   const cands = value ? imageUrlCandidates(value) : [];
   const src = idx < cands.length ? cands[idx] : "";
   const bgStyle = bg ? { background: bg, borderColor: bg } : undefined;
   const thumb = (
     <span
+      onClick={() => src && setPreview(true)}
       style={bgStyle}
       className={`w-10 h-10 shrink-0 rounded-md border border-gray-200 bg-gray-50 inline-flex items-center justify-center overflow-hidden ${
         src ? "cursor-zoom-in" : ""
@@ -158,6 +162,15 @@ function DesignLinkCell({
         </Popover>
       ) : (
         thumb
+      )}
+      {/* Modal xem ảnh full khi bấm vào thumbnail */}
+      {src && (
+        <Image
+          src={src}
+          alt={label}
+          style={{ display: "none" }}
+          preview={{ visible: preview, src, onVisibleChange: setPreview }}
+        />
       )}
       <div className="flex-1 min-w-0">
         <div

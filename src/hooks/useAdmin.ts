@@ -16,6 +16,7 @@ import {
 import { sbSelectAll, sbDeleteMany, sbUpsert } from "../lib/supabase";
 import {
   BaseProduct,
+  BlankCategory,
   DesignRequest,
   ImportBatch,
   LedgerEntry,
@@ -44,6 +45,7 @@ const shippingRef = collection(db, "shippingPrices");
 const designReqRef = collection(db, "designRequests");
 const servicesRef = collection(db, "services");
 const productsRef = collection(db, "baseProducts");
+const blankCategoriesRef = collection(db, "podBlankCategories");
 const podPricesRef = collection(db, "podPrices");
 const colorsRef = collection(db, "podColors");
 const variantsRef = collection(db, "podVariants");
@@ -429,6 +431,27 @@ export function useBaseProducts() {
   return { ...q, products: toList<BaseProduct>(q.data) };
 }
 export const useBaseProductMutations = crud(productsRef, "adm-products");
+
+/* ---------- Danh mục (Loại) phôi — admin tự quản lý ---------- */
+/**
+ * Bảng "podBlankCategories" (chạy supabase/add_blank_categories.sql).
+ * Nếu chưa tạo bảng thì trả về danh sách rỗng để trang vẫn dùng được với
+ * danh mục mặc định — không làm vỡ giao diện.
+ */
+export function useBlankCategories() {
+  const q = useQuery(["adm-blank-categories"], async () => {
+    try {
+      return await getDocs(query(blankCategoriesRef, orderBy("created", "asc")));
+    } catch {
+      return null;
+    }
+  });
+  return { ...q, categories: toList<BlankCategory>(q.data) };
+}
+export const useBlankCategoryMutations = crud(
+  blankCategoriesRef,
+  "adm-blank-categories"
+);
 
 /* ---------- POD base prices (bảng giá phôi theo Loại + Size) ---------- */
 export function usePodPrices() {

@@ -471,6 +471,36 @@ export default function Sellers() {
     },
   };
 
+  /**
+   * Log người duyệt đơn: mỗi lần bấm duyệt / hủy / đổi trạng thái, đơn được
+   * ghi kèm tên người thao tác (nhân viên hoặc admin) + thời điểm + tên thao
+   * tác. Nếu DB chưa có 3 cột log (chưa chạy add_order_approval_log.sql) thì
+   * vẫn cập nhật đơn như cũ, chỉ báo nhắc 1 lần cho khỏi kẹt công việc.
+   */
+  const actorName = String(
+    adminUser?.name || adminUser?.email || "admin"
+  ).trim();
+  const noLogColumns = useRef(false);
+  const updateWithLog = async (vars: any, action: string) => {
+    if (!noLogColumns.current) {
+      try {
+        await orderMut.update.mutateAsync({
+          ...vars,
+          approvedBy: actorName,
+          approvedAt: new Date().toISOString(),
+          approvedAction: action,
+        });
+        return;
+      } catch (e) {
+        noLogColumns.current = true;
+        message.warning(
+          "Chưa ghi được log người duyệt — chạy file supabase/add_order_approval_log.sql trong Supabase. Đơn vẫn được cập nhật bình thường."
+        );
+      }
+    }
+    await orderMut.update.mutateAsync(vars);
+  };
+
   const [statusTab, setStatusTab] = useState("all");
   const [filterSeller, setFilterSeller] = useState<string>("");
   const [filterShop, setFilterShop] = useState<string>("");
@@ -1159,7 +1189,7 @@ export default function Sellers() {
   const handleBulkApprove = async () => {
     const list = approvableSelected();
     for (const o of list) {
-      await orderMut.update.mutateAsync({ id: o.id, status: "in_production" });
+      await updateWithLog({ id: o.id, status: "in_production" }, "Duyệt đơn");
     }
     message.success(`Đã duyệt ${list.length} đơn → Đang sản xuất`);
     setSelectedIds([]);
@@ -1167,7 +1197,7 @@ export default function Sellers() {
   const handleBulkCancel = async () => {
     const list = approvableSelected();
     for (const o of list) {
-      await orderMut.update.mutateAsync({ id: o.id, status: "cancelled" });
+      await updateWithLog({ id: o.id, status: "cancelled" }, "Hủy đơn");
     }
     message.success(`Đã hủy ${list.length} đơn`);
     setSelectedIds([]);
@@ -1180,7 +1210,7 @@ export default function Sellers() {
   const handleBulkReship = async () => {
     const list = supportSelected();
     for (const o of list) {
-      await orderMut.update.mutateAsync({ id: o.id, status: "reship" });
+      await updateWithLog({ id: o.id, status: "reship" }, "Duyệt đi lại (Reship)");
     }
     message.success(`Đã duyệt đi lại ${list.length} đơn (Reship)`);
     setSelectedIds([]);
@@ -1191,11 +1221,14 @@ export default function Sellers() {
   const handleBulkUnreship = async () => {
     const list = reshipSelected();
     for (const o of list) {
-      await orderMut.update.mutateAsync({
-        id: o.id,
-        status: (o as any).prevStatus || "completed",
-        prevStatus: "",
-      } as any);
+      await updateWithLog(
+        {
+          id: o.id,
+          status: (o as any).prevStatus || "completed",
+          prevStatus: "",
+        },
+        "Hủy đơn Reship"
+      );
     }
     message.success(`Đã hủy ${list.length} đơn Reship`);
     setSelectedIds([]);
@@ -1218,10 +1251,10 @@ export default function Sellers() {
     const list = revertableSelected();
     const skipped = selectedIds.length - list.length;
     for (const o of list) {
-      await orderMut.update.mutateAsync({
-        id: o.id,
-        status: PREV_STATUS[o.status],
-      });
+      await updateWithLog(
+        { id: o.id, status: PREV_STATUS[o.status] },
+        "Trả về trạng thái trước"
+      );
     }
     if (list.length)
       message.success(`Đã trả ${list.length} đơn về trạng thái trước`);
@@ -1317,7 +1350,10 @@ export default function Sellers() {
   };
 
   const approve = async (o: PodOrder, status: string) => {
-    await orderMut.update.mutateAsync({ id: o.id, status });
+    await updateWithLog(
+      { id: o.id, status },
+      ORDER_STATUS[status]?.label || status
+    );
     message.success(
       `Đơn ${o.orderCode} → ${ORDER_STATUS[status]?.label || status}`
     );
@@ -2260,6 +2296,14 @@ export default function Sellers() {
                       </th>
                     </>
                   )}
+                  {/* Log duyệt đơn — chỉ admin xem được */}
+                  {canSeeMoney && (
+                    <th className="p-3 font-medium">
+                      <Tooltip title="Ai bấm duyệt / hủy / đổi trạng thái đơn gần nhất">
+                        <span className="cursor-help">Log duyệt</span>
+                      </Tooltip>
+                    </th>
+                  )}
                   <th className="p-3 font-medium">Thao tác</th>
                 </tr>
               </thead>
@@ -2841,6 +2885,40 @@ export default function Sellers() {
                       </td>
                         </>
                       )}
+                      {/* Log duyệt đơn — chỉ admin xem được */}
+                      {canSeeMoney && (
+                        <td className="p-3 whitespace-nowrap align-top">
+                          {o.approvedBy ? (
+                            <Tooltip
+                              title={`${o.approvedAction || "Duyệt đơn"} bởi ${
+                                o.approvedBy
+                              }${
+                                o.approvedAt
+                                  ? ` lúc ${dayjs(o.approvedAt).format(
+                                      "DD/MM/YYYY HH:mm"
+                                    )}`
+                                  : ""
+                              }`}
+                            >
+                              <div className="cursor-help">
+                                <div className="font-medium text-gray-800 truncate max-w-[150px]">
+                                  {o.approvedBy}
+                                </div>
+                                <div className="text-[11px] text-gray-400">
+                                  {o.approvedAction || "Duyệt đơn"}
+                                  {o.approvedAt
+                                    ? ` · ${dayjs(o.approvedAt).format(
+                                        "D/M HH:mm"
+                                      )}`
+                                    : ""}
+                                </div>
+                              </div>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                      )}
                       <td className="p-3">
                         <div className="flex items-center gap-1.5">
                           <Tooltip title="Chi tiết đơn">
@@ -2889,7 +2967,7 @@ export default function Sellers() {
                 {!paged.length && (
                   <tr>
                     <td
-                      colSpan={canSeeMoney ? 16 : 12}
+                      colSpan={canSeeMoney ? 17 : 12}
                       className="p-12 text-center text-gray-400"
                     >
                       Không có đơn hàng nào

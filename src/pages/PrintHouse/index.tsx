@@ -330,6 +330,12 @@ function PrintHouseSkuManager() {
 
   const [house, setHouse] = useState("");
   const [search, setSearch] = useState("");
+  /* Bộ lọc nhanh cho bảng Data SKU */
+  const [fBrand, setFBrand] = useState<string | undefined>();
+  const [fColor, setFColor] = useState<string | undefined>();
+  const [fSize, setFSize] = useState<string | undefined>();
+  const [fStyle, setFStyle] = useState<string | undefined>();
+  const [fVariant, setFVariant] = useState<"all" | "missing" | "ready">("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -402,18 +408,68 @@ function PrintHouseSkuManager() {
     if (!house && printHouses.length) setHouse(printHouses[0].name);
   }, [printHouses, house]);
 
+  /** Toàn bộ SKU của nhà in đang chọn — nguồn cho các dropdown lọc */
+  const houseRows = useMemo(
+    () => phSkus.filter((r) => r.printHouse === house),
+    [phSkus, house]
+  );
+
+  /** Giá trị riêng của 1 cột (kèm số dòng) để đổ vào dropdown lọc */
+  const skuOptionsOf = (key: keyof PrintHouseSku) => {
+    const count = new Map<string, number>();
+    houseRows.forEach((r) => {
+      const v = String((r as any)[key] ?? "").trim();
+      if (!v) return;
+      count.set(v, (count.get(v) || 0) + 1);
+    });
+    return Array.from(count.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([v, n]) => ({ value: v, label: `${v} (${n})` }));
+  };
+  const brandOptions = useMemo(() => skuOptionsOf("brand"), [houseRows]);
+  const skuColorOptions = useMemo(() => skuOptionsOf("color"), [houseRows]);
+  const skuSizeOptions = useMemo(() => skuOptionsOf("size"), [houseRows]);
+  const styleOptions = useMemo(() => skuOptionsOf("productName"), [houseRows]);
+
+  const eqv = (a: any, b?: string) =>
+    String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+
   const rows = useMemo(() => {
     const s = search.trim().toLowerCase();
-    return phSkus
-      .filter((r) => r.printHouse === house)
-      .filter(
-        (r) =>
-          !s ||
-          [r.brand, r.color, r.size, r.variantId, r.productName]
-            .map((x) => (x || "").toLowerCase())
-            .some((x) => x.includes(s))
-      );
-  }, [phSkus, house, search]);
+    return houseRows.filter((r) => {
+      if (
+        s &&
+        ![r.brand, r.color, r.size, r.variantId, r.productName]
+          .map((x) => (x || "").toLowerCase())
+          .some((x) => x.includes(s))
+      )
+        return false;
+      if (fBrand && !eqv(r.brand, fBrand)) return false;
+      if (fColor && !eqv(r.color, fColor)) return false;
+      if (fSize && !eqv(r.size, fSize)) return false;
+      if (fStyle && !eqv(r.productName, fStyle)) return false;
+      if (fVariant === "missing" && String(r.variantId || "").trim())
+        return false;
+      if (fVariant === "ready" && !String(r.variantId || "").trim())
+        return false;
+      return true;
+    });
+  }, [houseRows, search, fBrand, fColor, fSize, fStyle, fVariant]);
+
+  const skuFilterCount =
+    (fBrand ? 1 : 0) +
+    (fColor ? 1 : 0) +
+    (fSize ? 1 : 0) +
+    (fStyle ? 1 : 0) +
+    (fVariant !== "all" ? 1 : 0);
+
+  const clearSkuFilters = () => {
+    setFBrand(undefined);
+    setFColor(undefined);
+    setFSize(undefined);
+    setFStyle(undefined);
+    setFVariant("all");
+  };
 
   const countByHouse = useMemo(() => {
     const m = new Map<string, number>();
@@ -431,7 +487,13 @@ function PrintHouseSkuManager() {
   useEffect(() => {
     setPage(1);
     setSelectedIds([]);
-  }, [house, search]);
+  }, [house, search, fBrand, fColor, fSize, fStyle, fVariant]);
+
+  // Đổi nhà in -> bỏ các lọc cũ (giá trị của nhà in khác không còn đúng)
+  useEffect(() => {
+    clearSkuFilters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [house]);
 
   const handleImport = async (file: File) => {
     if (!house) return message.warning("Chọn nhà in trước khi import");
@@ -609,6 +671,93 @@ function PrintHouseSkuManager() {
             e.target.value = "";
           }}
         />
+      </div>
+
+      {/* Bộ lọc nhanh cho bảng SKU của nhà in đang chọn */}
+      <div className="flex items-end gap-3 flex-wrap mt-3 pt-3 border-t border-gray-100">
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            BRAND (SẢN PHẨM)
+          </div>
+          <Select
+            className="w-[190px]"
+            placeholder="Tất cả brand"
+            value={fBrand}
+            onChange={setFBrand}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={brandOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            COLOR
+          </div>
+          <Select
+            className="w-[160px]"
+            placeholder="Tất cả màu"
+            value={fColor}
+            onChange={setFColor}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={skuColorOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            SIZE
+          </div>
+          <Select
+            className="w-[130px]"
+            placeholder="Tất cả size"
+            value={fSize}
+            onChange={setFSize}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={skuSizeOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            PRODUCT NAME / STYLE
+          </div>
+          <Select
+            className="w-[240px]"
+            placeholder="Tất cả style"
+            value={fStyle}
+            onChange={setFStyle}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={styleOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            VARIANT ID
+          </div>
+          <Select
+            className="w-[160px]"
+            value={fVariant}
+            onChange={setFVariant}
+            options={[
+              { value: "all", label: "Tất cả" },
+              { value: "missing", label: "Thiếu Variant ID" },
+              { value: "ready", label: "Đã có Variant ID" },
+            ]}
+          />
+        </div>
+        {skuFilterCount > 0 && (
+          <Button onClick={clearSkuFilters}>
+            Xoá lọc ({skuFilterCount})
+          </Button>
+        )}
+        <span className="ml-auto text-xs bg-gray-100 rounded-full px-3 py-1 text-gray-600 font-medium">
+          Đang hiện {rows.length}/{houseRows.length} SKU
+        </span>
       </div>
 
       {importing && (
@@ -838,6 +987,14 @@ export default function PrintHouse() {
   const qc = useQueryClient();
 
   const [search, setSearch] = useState("");
+  /* Bộ lọc nhanh (ngoài ô tìm kiếm) */
+  const [fHouse, setFHouse] = useState<string | undefined>();
+  const [fSku, setFSku] = useState<string | undefined>();
+  const [fColor, setFColor] = useState<string | undefined>();
+  const [fSize, setFSize] = useState<string | undefined>();
+  const [fTech, setFTech] = useState<string | undefined>();
+  const [fDate, setFDate] = useState<string | undefined>();
+  const [fDesign, setFDesign] = useState<"all" | "missing" | "ready">("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -848,15 +1005,101 @@ export default function PrintHouse() {
   } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /** Giá trị riêng của 1 cột để đổ vào dropdown lọc (kèm số dòng) */
+  const optionsOf = (key: keyof PrintOrder) => {
+    const count = new Map<string, number>();
+    printOrders.forEach((o) => {
+      const v = String((o as any)[key] ?? "").trim();
+      if (!v) return;
+      count.set(v, (count.get(v) || 0) + 1);
+    });
+    return Array.from(count.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([v, n]) => ({ value: v, label: `${v} (${n})` }));
+  };
+  const houseOptions = useMemo(() => optionsOf("printHouse"), [printOrders]);
+  const skuOptions = useMemo(() => optionsOf("sku"), [printOrders]);
+  const colorOptions = useMemo(() => optionsOf("color"), [printOrders]);
+  const sizeOptions = useMemo(() => optionsOf("size"), [printOrders]);
+  const techOptions = useMemo(() => optionsOf("technology"), [printOrders]);
+  const dateOptions = useMemo(() => optionsOf("orderDate"), [printOrders]);
+
+  /** Số dòng chưa gán nhà in — cho mục "Chưa gán nhà in" trong dropdown */
+  const noHouseCount = useMemo(
+    () => printOrders.filter((o) => !String(o.printHouse || "").trim()).length,
+    [printOrders]
+  );
+
+  const NO_HOUSE = "__none__";
+  const eq = (a: any, b?: string) =>
+    String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
-    if (!s) return printOrders;
-    return printOrders.filter((o) =>
-      [o.orderId, o.sku, o.firstName, o.lastName, o.city, o.color, o.size]
-        .map((x) => (x || "").toLowerCase())
-        .some((x) => x.includes(s))
-    );
-  }, [printOrders, search]);
+    return printOrders.filter((o) => {
+      if (
+        s &&
+        ![o.orderId, o.sku, o.firstName, o.lastName, o.city, o.color, o.size]
+          .map((x) => (x || "").toLowerCase())
+          .some((x) => x.includes(s))
+      )
+        return false;
+      if (fHouse === NO_HOUSE) {
+        if (String(o.printHouse || "").trim()) return false;
+      } else if (fHouse && !eq(o.printHouse, fHouse)) return false;
+      if (fSku && !eq(o.sku, fSku)) return false;
+      if (fColor && !eq(o.color, fColor)) return false;
+      if (fSize && !eq(o.size, fSize)) return false;
+      if (fTech && !eq(o.technology, fTech)) return false;
+      if (fDate && !eq(o.orderDate, fDate)) return false;
+      if (fDesign !== "all") {
+        const hasDesign = !!(
+          String(o.frontDesignUrl || "").trim() ||
+          String(o.backDesignUrl || "").trim()
+        );
+        if (fDesign === "missing" && hasDesign) return false;
+        if (fDesign === "ready" && !hasDesign) return false;
+      }
+      return true;
+    });
+  }, [
+    printOrders,
+    search,
+    fHouse,
+    fSku,
+    fColor,
+    fSize,
+    fTech,
+    fDate,
+    fDesign,
+  ]);
+
+  /** Có đang lọc gì không (để hiện nút Xoá lọc) */
+  const filterCount =
+    (fHouse ? 1 : 0) +
+    (fSku ? 1 : 0) +
+    (fColor ? 1 : 0) +
+    (fSize ? 1 : 0) +
+    (fTech ? 1 : 0) +
+    (fDate ? 1 : 0) +
+    (fDesign !== "all" ? 1 : 0);
+
+  const clearFilters = () => {
+    setFHouse(undefined);
+    setFSku(undefined);
+    setFColor(undefined);
+    setFSize(undefined);
+    setFTech(undefined);
+    setFDate(undefined);
+    setFDesign("all");
+    setPage(1);
+  };
+
+  // Đổi bộ lọc -> về trang đầu, bỏ chọn dòng cũ cho khỏi lẫn
+  useEffect(() => {
+    setPage(1);
+    setSelectedIds([]);
+  }, [fHouse, fSku, fColor, fSize, fTech, fDate, fDesign]);
 
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
   const pageIds = paged.map((o) => o.id);
@@ -1022,6 +1265,131 @@ export default function PrintHouse() {
             e.target.value = "";
           }}
         />
+      </div>
+
+      {/* Bộ lọc nhanh — lọc thêm ngoài ô tìm kiếm */}
+      <div className="border border-gray-200 rounded-xl p-4 mt-3 bg-white flex items-end gap-3 flex-wrap">
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            NHÀ IN
+          </div>
+          <Select
+            className="w-[170px]"
+            placeholder="Tất cả nhà in"
+            value={fHouse}
+            onChange={setFHouse}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={[
+              ...houseOptions,
+              ...(noHouseCount
+                ? [
+                    {
+                      value: NO_HOUSE,
+                      label: `Chưa gán nhà in (${noHouseCount})`,
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            NGÀY
+          </div>
+          <Select
+            className="w-[150px]"
+            placeholder="Tất cả ngày"
+            value={fDate}
+            onChange={setFDate}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={dateOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            SKU
+          </div>
+          <Select
+            className="w-[190px]"
+            placeholder="Tất cả SKU"
+            value={fSku}
+            onChange={setFSku}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={skuOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            MÀU
+          </div>
+          <Select
+            className="w-[150px]"
+            placeholder="Tất cả màu"
+            value={fColor}
+            onChange={setFColor}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={colorOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            SIZE
+          </div>
+          <Select
+            className="w-[120px]"
+            placeholder="Tất cả size"
+            value={fSize}
+            onChange={setFSize}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={sizeOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            CÔNG NGHỆ IN
+          </div>
+          <Select
+            className="w-[150px]"
+            placeholder="Tất cả"
+            value={fTech}
+            onChange={setFTech}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={techOptions}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] tracking-widest text-gray-400 font-medium mb-1">
+            THIẾT KẾ
+          </div>
+          <Select
+            className="w-[160px]"
+            value={fDesign}
+            onChange={setFDesign}
+            options={[
+              { value: "all", label: "Tất cả" },
+              { value: "missing", label: "Thiếu thiết kế" },
+              { value: "ready", label: "Đã có thiết kế" },
+            ]}
+          />
+        </div>
+        {filterCount > 0 && (
+          <Button onClick={clearFilters}>Xoá lọc ({filterCount})</Button>
+        )}
+        <span className="ml-auto text-xs bg-gray-100 rounded-full px-3 py-1 text-gray-600 font-medium">
+          Đang hiện {filtered.length}/{printOrders.length} dòng
+        </span>
       </div>
 
       {/* Bảng */}

@@ -50,6 +50,9 @@ export const STAFF_PATHS = [
   "/app/pending-ids",
   "/app/staff-chat",
   "/app/notifications",
+  // Nhân viên được vào hàng đợi import PDF và duyệt lô luôn (không phải chờ
+  // admin). Cột tiền và thao tác xoá lô vẫn chỉ dành cho admin.
+  "/app/import-queue",
 ];
 
 /** Trang mặc định sau khi đăng nhập theo từng vai trò */

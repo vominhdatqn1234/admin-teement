@@ -42,7 +42,11 @@ import {
   unreadForStaff,
 } from "../../pages/StaffChat";
 import { PAID_STATUSES } from "../../models/admin";
-import { getNotifState, unreadPaidCount } from "../../pages/Notifications";
+import {
+  getNotifState,
+  unreadAssignedCount,
+  unreadPaidCount,
+} from "../../pages/Notifications";
 
 const EXTENSIONS = [
   { to: "/app/finance", label: "Tài chính & Công nợ", icon: <FiDollarSign /> },
@@ -143,9 +147,14 @@ export default function AdminLayout() {
       window.removeEventListener("focus", sync);
     };
   }, []);
+  // Nhân viên: chỉ đếm đơn đang giao cho chính mình (tin nhắn admin đã có badge
+  // riêng ở menu Chat nội bộ). Admin: giữ nguyên đếm đơn khách gửi thanh toán.
   const notifCount = useMemo(
-    () => unreadPaidCount(orders, notifState),
-    [orders, notifState]
+    () =>
+      isStaff
+        ? unreadAssignedCount(orders, adminUser?.name, notifState)
+        : unreadPaidCount(orders, notifState),
+    [isStaff, orders, adminUser, notifState]
   );
 
   /** Số hiện badge đỏ cho từng menu */

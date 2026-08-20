@@ -21,7 +21,7 @@ import {
   FiXCircle,
 } from "react-icons/fi";
 import { useImportQueue, useImportQueueMutations } from "../../hooks/useAdmin";
-import { useAdminUser } from "../../hooks/useAdminAuth";
+import { isAdminRole, useAdminUser } from "../../hooks/useAdminAuth";
 import { imageUrlCandidates } from "../../lib/imageUrl";
 import { ImportBatch, OrderItem } from "../../models/admin";
 
@@ -228,6 +228,10 @@ const TABS: { key: string; label: string }[] = [
 
 export default function ImportQueue() {
   const admin = useAdminUser();
+  /* Nhân viên: xem + duyệt/từ chối lô ngay như admin, nhưng KHÔNG thấy cột
+     tiền và không được xoá lô khỏi hàng đợi. */
+  const canSeeMoney = isAdminRole(admin);
+  const canDelete = canSeeMoney;
   const { batches, isLoading } = useImportQueue();
   const { approve, reject, remove, removeMany } = useImportQueueMutations();
   const [tab, setTab] = useState("pending");
@@ -376,8 +380,8 @@ export default function ImportQueue() {
         </div>
       )}
 
-      {/* Thanh chọn hàng loạt */}
-      {rows.length > 0 && (
+      {/* Thanh chọn hàng loạt — chỉ admin (dùng để xoá lô) */}
+      {canDelete && rows.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-100 px-4 py-2.5 flex items-center gap-3 flex-wrap">
           <Checkbox
             checked={allPageSelected}
@@ -440,10 +444,12 @@ export default function ImportQueue() {
                 className="bg-white rounded-2xl border border-gray-100 overflow-hidden"
               >
                 <div className="flex items-center gap-3 flex-wrap p-4">
-                  <Checkbox
-                    checked={selectedIds.includes(b.id)}
-                    onChange={(e) => toggleSelectOne(b.id, e.target.checked)}
-                  />
+                  {canDelete && (
+                    <Checkbox
+                      checked={selectedIds.includes(b.id)}
+                      onChange={(e) => toggleSelectOne(b.id, e.target.checked)}
+                    />
+                  )}
                   <button
                     onClick={() => setExpanded(open ? null : b.id)}
                     className="border-0 bg-transparent cursor-pointer text-gray-400 flex items-center"
@@ -510,7 +516,7 @@ export default function ImportQueue() {
                           <th className="p-3">NGÀY LÊN ĐƠN</th>
                           <th className="p-3">KHÁCH HÀNG</th>
                           <th className="p-3">CHI TIẾT SẢN PHẨM</th>
-                          <th className="p-3">GIÁ</th>
+                          {canSeeMoney && <th className="p-3">GIÁ</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -549,9 +555,11 @@ export default function ImportQueue() {
                                   ))}
                                 </div>
                               </td>
-                              <td className="p-3 align-top font-bold whitespace-nowrap">
-                                ${Number(d.total ?? 0).toFixed(2)}
-                              </td>
+                              {canSeeMoney && (
+                                <td className="p-3 align-top font-bold whitespace-nowrap">
+                                  ${Number(d.total ?? 0).toFixed(2)}
+                                </td>
+                              )}
                             </tr>
                           );
                         })}
@@ -576,17 +584,19 @@ export default function ImportQueue() {
                       </div>
                     )}
 
-                    <Popconfirm
-                      title="Xóa lô này khỏi hàng đợi?"
-                      okText="Xóa"
-                      cancelText="Hủy"
-                      okButtonProps={{ danger: true }}
-                      onConfirm={() => remove.mutate(b.id)}
-                    >
-                      <button className="mt-3 text-xs text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer">
-                        Xóa lô khỏi hàng đợi
-                      </button>
-                    </Popconfirm>
+                    {canDelete && (
+                      <Popconfirm
+                        title="Xóa lô này khỏi hàng đợi?"
+                        okText="Xóa"
+                        cancelText="Hủy"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => remove.mutate(b.id)}
+                      >
+                        <button className="mt-3 text-xs text-gray-400 hover:text-red-500 border-0 bg-transparent cursor-pointer">
+                          Xóa lô khỏi hàng đợi
+                        </button>
+                      </Popconfirm>
+                    )}
                   </div>
                 )}
               </div>

@@ -209,6 +209,10 @@ export interface PodOrder {
   csMockupUrl?: string; // Link mockup
   csEditedBy?: string; // Nhân viên chỉnh sửa gần nhất
   csEditedAt?: string;
+  /* ----- Log duyệt đơn (ai bấm duyệt / đổi trạng thái gần nhất) ----- */
+  approvedBy?: string; // Tên nhân viên hoặc admin đã duyệt
+  approvedAt?: string; // Thời điểm duyệt (ISO)
+  approvedAction?: string; // Thao tác: Duyệt đơn / Hủy đơn / Reship...
 }
 
 /** Lô đơn import từ PDF do seller gửi, chờ admin duyệt. */
@@ -299,6 +303,13 @@ export interface BaseProduct {
   sizes?: string[];
   material?: string; // chất liệu
   specs?: string; // mô tả thông số chi tiết
+  created?: string;
+}
+
+/** Danh mục (Loại) phôi — admin tự thêm/sửa/xoá trong trang Kho Phôi POD */
+export interface BlankCategory {
+  id: string;
+  name: string;
   created?: string;
 }
 

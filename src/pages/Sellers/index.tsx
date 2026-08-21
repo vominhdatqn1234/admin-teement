@@ -536,9 +536,11 @@ export default function Sellers() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [tableFull, setTableFull] = useState(false);
   const [sellerPanelOpen, setSellerPanelOpen] = useState(true);
-  const [profitFilter, setProfitFilter] = useState<"all" | "profit" | "loss">(
-    "all"
-  );
+  // "zero"      = đơn đang lưu giá $0 nhưng bảng giá phôi tính ra được
+  // "no_house_price" = đã gán nhà in nhưng phôi chưa có giá của nhà in đó
+  const [profitFilter, setProfitFilter] = useState<
+    "all" | "profit" | "loss" | "zero" | "zero_no_variant" | "no_house_price"
+  >("all");
   const [exportingFactory, setExportingFactory] = useState(false);
   // Mở từ Thông báo: /app/sellers?code=<mã đơn> -> điền sẵn ô tìm kiếm
   const [searchParams] = useSearchParams();
@@ -891,6 +893,75 @@ export default function Sellers() {
     return res;
   };
 
+  /**
+   * Đơn ĐÃ gán nhà in nhưng phôi lại CHƯA điền giá của đúng nhà in đó
+   * (vd gán Flashship mà dòng phôi chỉ có giá AK2). Những đơn này bị loại khỏi
+   * thống kê lãi/lỗ nên rất dễ bị bỏ sót -> đánh dấu để admin đi điền giá.
+   * KHÔNG lấy giá nhà in khác thay thế: số lãi/lỗ sẽ sai so với chi phí thật.
+   */
+  const missingHousePrice = (o: PodOrder): boolean => {
+    if (!String(o.printHouse || "").trim()) return false;
+    const items = (o.items || []) as any[];
+    if (!items.length) return false;
+    // Tra được phôi trong bảng giá nhưng không có giá của nhà in đang gán
+    return items.some((it) => {
+      const v = findVar(it);
+      return !!v && houseUnitPrice(o, v) <= 0;
+    });
+  };
+
+  /**
+   * Tính lại giá đơn theo bảng giá phôi HIỆN TẠI.
+   * Dùng để cứu các đơn cũ bị lưu total = 0 (lúc tạo đơn tra hụt bảng giá, hoặc
+   * file import thiếu cột giá) — bên seller chỉ tính lại được khi đơn còn ở
+   * "Chờ thanh toán" nên đơn đã sản xuất sẽ kẹt ở $0 vĩnh viễn.
+   * Trả về null nếu không tra được phôi nào / giá không đổi.
+   */
+  const recalcPricing = (
+    o: PodOrder
+  ): { items: any[]; total: number; from: number } | null => {
+    const items = (o.items || []) as any[];
+    if (!items.length) return null;
+    let matched = 0;
+    const next = items.map((it) => {
+      const v = findVar(it);
+      if (!v) return it;
+      matched += 1;
+      return { ...it, price: itemUnitPrice(v, it) };
+    });
+    if (!matched) return null;
+    const total = next.reduce(
+      (s, it) => s + (it.price || 0) * (it.quantity || 1),
+      0
+    );
+    const changed =
+      total !== (o.total || 0) ||
+      next.some((it, i) => (it.price || 0) !== (items[i].price || 0));
+    if (!changed) return null;
+    return { items: next, total, from: o.total || 0 };
+  };
+
+  /**
+   * Phân loại đơn đang lưu giá $0 — soi TẤT CẢ đơn, không riêng đơn nào.
+   *  - "ok"         : có giá, hoặc đơn Hoàn tiền/Đã hủy/Copy-Reship (0đ cố ý)
+   *  - "fixable"    : $0 nhưng bảng giá phôi tính ra được -> bấm "Tính lại giá"
+   *  - "no_variant" : $0 và KHÔNG tra được phôi nào trong bảng giá -> phải bổ
+   *                   sung dòng phôi (hoặc sửa tên phôi của đơn) trước đã
+   */
+  type ZeroState = "ok" | "fixable" | "no_variant";
+  const zeroState = (o: PodOrder): ZeroState => {
+    if ((o.total || 0) > 0) return "ok";
+    if (["refund", "cancelled"].includes(o.status)) return "ok";
+    // Đơn copy (-C1) / ship lại (-RS1) được tạo ra là 0đ có chủ đích
+    if (/-(C|RS)\d+$/i.test(o.orderCode || "")) return "ok";
+    const items = (o.items || []) as any[];
+    if (!items.length) return "ok";
+    if (!items.some((it) => findVar(it))) return "no_variant";
+    const next = recalcPricing(o);
+    return next && next.total > 0 ? "fixable" : "no_variant";
+  };
+  const isZeroPriced = (o: PodOrder) => zeroState(o) === "fixable";
+
   // Thống kê lãi/lỗ trên tập đơn đang lọc
   const profitStats = useMemo(() => {
     let withHouse = 0;
@@ -898,7 +969,14 @@ export default function Sellers() {
     let lo = 0;
     let totalLai = 0;
     let totalLo = 0;
+    let zero = 0;
+    let zeroNoVariant = 0;
+    let noHousePrice = 0;
     for (const o of filtered) {
+      const z = zeroState(o);
+      if (z === "fixable") zero += 1;
+      else if (z === "no_variant") zeroNoVariant += 1;
+      if (missingHousePrice(o)) noHousePrice += 1;
       const p = orderProfit(o);
       if (!p.hasHouse) continue;
       withHouse += 1;
@@ -910,13 +988,46 @@ export default function Sellers() {
         totalLo += -p.profit;
       }
     }
-    return { withHouse, lai, lo, totalLai, totalLo, net: totalLai - totalLo };
+    return {
+      withHouse,
+      lai,
+      lo,
+      totalLai,
+      totalLo,
+      net: totalLai - totalLo,
+      zero,
+      zeroNoVariant,
+      noHousePrice,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, variants]);
 
-  // Áp bộ lọc lãi/lỗ (chỉ tính đơn đã có giá nhà in)
+  /**
+   * Quét TOÀN BỘ đơn (bỏ qua tab trạng thái + mọi bộ lọc) để không có đơn lỗi
+   * giá nào nấp sau một tab khác. Dùng cho dòng cảnh báo tổng phía trên bảng.
+   */
+  const priceIssuesAll = useMemo(() => {
+    let zero = 0;
+    let zeroNoVariant = 0;
+    let noHousePrice = 0;
+    for (const o of orders) {
+      const z = zeroState(o);
+      if (z === "fixable") zero += 1;
+      else if (z === "no_variant") zeroNoVariant += 1;
+      if (missingHousePrice(o)) noHousePrice += 1;
+    }
+    return { zero, zeroNoVariant, noHousePrice, total: orders.length };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, variants, productBySku]);
+
+  // Áp bộ lọc lãi/lỗ (chỉ tính đơn đã có giá nhà in) + 3 bộ lọc cảnh báo
   const visible = useMemo(() => {
     if (profitFilter === "all") return filtered;
+    if (profitFilter === "zero") return filtered.filter(isZeroPriced);
+    if (profitFilter === "zero_no_variant")
+      return filtered.filter((o) => zeroState(o) === "no_variant");
+    if (profitFilter === "no_house_price")
+      return filtered.filter(missingHousePrice);
     return filtered.filter((o) => {
       const p = orderProfit(o);
       if (!p.hasHouse) return false;
@@ -1099,6 +1210,67 @@ export default function Sellers() {
   };
   const handleExportSelected = () =>
     exportOrders(selectedOrders(), "selected-orders.csv");
+
+  /* ---------------- Tính lại giá theo bảng giá phôi ----------------
+   * Ghi lại items[].price + total cho các đơn đã chọn. Chạy được ở MỌI trạng
+   * thái (bên seller chỉ tính lại được đơn "Chờ thanh toán"), nên đây là cách
+   * duy nhất chữa các đơn cũ đang hiện $0.00.
+   * Không đụng tới đơn HOÀN TIỀN / ĐÃ HỦY / Copy (-C1) / Reship (-RS1) —
+   * giá 0 ở những đơn đó là cố ý.
+   */
+  const recalcableSelected = () =>
+    selectedOrders().filter(
+      (o) =>
+        !["refund", "cancelled"].includes(o.status) &&
+        !/-(C|RS)\d+$/i.test(o.orderCode || "")
+    );
+  const [recalcing, setRecalcing] = useState(false);
+  const handleBulkRecalcPrice = async () => {
+    const list = recalcableSelected();
+    if (!variants.length)
+      return message.warning("Bảng giá phôi chưa tải xong, thử lại sau");
+    setRecalcing(true);
+    let changed = 0;
+    let unchanged = 0;
+    let noVariant = 0;
+    let fixedZero = 0;
+    try {
+      for (const o of list) {
+        const next = recalcPricing(o);
+        if (!next) {
+          // Không tra được phôi nào trong bảng giá -> báo riêng để đi bổ sung
+          if (!((o.items || []) as any[]).some((it) => findVar(it))) noVariant++;
+          else unchanged++;
+          continue;
+        }
+        await orderMut.update.mutateAsync({
+          id: o.id,
+          items: next.items,
+          total: next.total,
+        } as any);
+        changed++;
+        if (next.from === 0) fixedZero++;
+      }
+      qc.invalidateQueries(["adm-orders"]);
+      message.success(
+        `Đã tính lại giá: cập nhật ${changed} đơn` +
+          (fixedZero ? ` (trong đó ${fixedZero} đơn đang $0.00)` : "") +
+          (unchanged ? ` · ${unchanged} đơn giá đã đúng` : "") +
+          (noVariant
+            ? ` · ${noVariant} đơn KHÔNG tra được phôi trong bảng giá`
+            : "")
+      );
+      const skipped = selectedIds.length - list.length;
+      if (skipped)
+        message.info(
+          `Bỏ qua ${skipped} đơn Hoàn tiền/Đã hủy/Copy/Reship (giữ giá 0)`
+        );
+    } catch (e: any) {
+      message.error(`Tính lại giá lỗi: ${e?.message || e}`);
+    } finally {
+      setRecalcing(false);
+    }
+  };
 
   /* ---------------- Xuất file cho XƯỞNG (.xlsx có tô màu) ----------------
    * Xuất xong tự đánh dấu các đơn là "đã chuyển xưởng" (sentToFactoryAt) để
@@ -2188,6 +2360,61 @@ export default function Sellers() {
             </span>
           </div>
 
+          {/* Cảnh báo giá quét TOÀN BỘ đơn (mọi tab, mọi bộ lọc) — để không có
+              đơn lỗi giá nào nấp sau một tab khác. Bấm = nhảy về tab Tất cả và
+              lọc đúng nhóm đó. */}
+          {canSeeMoney &&
+            priceIssuesAll.zero +
+              priceIssuesAll.zeroNoVariant +
+              priceIssuesAll.noHousePrice >
+              0 && (
+              <div className="mb-3 flex items-center gap-2 flex-wrap bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                <span className="text-[13px] text-amber-800 font-semibold">
+                  Soi toàn bộ {priceIssuesAll.total} đơn — phát hiện lỗi giá:
+                </span>
+                {priceIssuesAll.zero > 0 && (
+                  <button
+                    onClick={() => {
+                      setStatusTab("all");
+                      setProfitFilter("zero");
+                      setPage(1);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[12px] font-medium cursor-pointer border bg-white text-amber-700 border-amber-300"
+                  >
+                    {priceIssuesAll.zero} đơn $0 — tính lại được
+                  </button>
+                )}
+                {priceIssuesAll.zeroNoVariant > 0 && (
+                  <button
+                    onClick={() => {
+                      setStatusTab("all");
+                      setProfitFilter("zero_no_variant");
+                      setPage(1);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[12px] font-medium cursor-pointer border bg-white text-rose-700 border-rose-300"
+                  >
+                    {priceIssuesAll.zeroNoVariant} đơn $0 — chưa có phôi trong
+                    bảng giá
+                  </button>
+                )}
+                {priceIssuesAll.noHousePrice > 0 && (
+                  <button
+                    onClick={() => {
+                      setStatusTab("all");
+                      setProfitFilter("no_house_price");
+                      setPage(1);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[12px] font-medium cursor-pointer border bg-white text-orange-700 border-orange-300"
+                  >
+                    {priceIssuesAll.noHousePrice} đơn thiếu giá nhà in
+                  </button>
+                )}
+                <span className="text-[11px] text-amber-700/70">
+                  (đã bỏ qua đơn Hoàn tiền / Đã hủy / Copy · Reship — 0đ cố ý)
+                </span>
+              </div>
+            )}
+
           {/* Thống kê Lãi/Lỗ (đơn đã gán nhà in) — bấm để lọc nhanh */}
           <div className="flex items-center gap-2 flex-wrap mb-3">
             <span className="text-xs text-gray-400 font-medium mr-1">
@@ -2242,6 +2469,69 @@ export default function Sellers() {
               Lãi ròng: {profitStats.net >= 0 ? "+" : "-"}
               {money(Math.abs(profitStats.net))}
             </span>
+            {/* Đơn đang kẹt $0 — chọn rồi bấm "Tính lại giá" ở thanh dưới */}
+            {profitStats.zero > 0 && (
+              <Tooltip title='Đơn lưu giá $0 nhưng bảng giá phôi tra ra được. Bấm để lọc, chọn hết rồi bấm "Tính lại giá".'>
+                <button
+                  onClick={() => {
+                    setProfitFilter(profitFilter === "zero" ? "all" : "zero");
+                    setPage(1);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border font-medium ${
+                    profitFilter === "zero"
+                      ? "bg-amber-500 text-white border-amber-500"
+                      : "bg-white text-amber-600 border-amber-200"
+                  }`}
+                >
+                  ⚠ Giá $0 cần tính lại: {profitStats.zero}
+                </button>
+              </Tooltip>
+            )}
+            {/* Đơn $0 mà phôi CHƯA có trong bảng giá -> tính lại cũng vô ích,
+                phải bổ sung dòng phôi / sửa tên phôi của đơn trước */}
+            {profitStats.zeroNoVariant > 0 && (
+              <Tooltip title="Đơn lưu giá $0 và KHÔNG tra được phôi nào trong Bảng giá phôi. Bấm 'Tính lại giá' sẽ không ăn thua — cần thêm dòng phôi vào bảng giá, hoặc sửa lại tên phôi/màu/size của đơn cho khớp.">
+                <button
+                  onClick={() => {
+                    setProfitFilter(
+                      profitFilter === "zero_no_variant"
+                        ? "all"
+                        : "zero_no_variant"
+                    );
+                    setPage(1);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border font-medium ${
+                    profitFilter === "zero_no_variant"
+                      ? "bg-rose-600 text-white border-rose-600"
+                      : "bg-white text-rose-600 border-rose-200"
+                  }`}
+                >
+                  ⚠ Giá $0 · chưa có phôi: {profitStats.zeroNoVariant}
+                </button>
+              </Tooltip>
+            )}
+            {/* Phôi chưa điền giá của đúng nhà in đang gán */}
+            {profitStats.noHousePrice > 0 && (
+              <Tooltip title="Đơn đã gán nhà in nhưng phôi chưa có giá của nhà in đó trong Bảng giá phôi -> không tính được lãi/lỗ. Bấm để lọc và đi bổ sung giá.">
+                <button
+                  onClick={() => {
+                    setProfitFilter(
+                      profitFilter === "no_house_price"
+                        ? "all"
+                        : "no_house_price"
+                    );
+                    setPage(1);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[13px] cursor-pointer border font-medium ${
+                    profitFilter === "no_house_price"
+                      ? "bg-orange-500 text-white border-orange-500"
+                      : "bg-white text-orange-600 border-orange-200"
+                  }`}
+                >
+                  ⚠ Thiếu giá nhà in: {profitStats.noHousePrice}
+                </button>
+              </Tooltip>
+            )}
             {profitFilter !== "all" && (
               <span className="text-xs text-gray-400">
                 Đang lọc: {visible.length} đơn
@@ -2809,6 +3099,43 @@ export default function Sellers() {
                             </Tooltip>
                           );
                         })()}
+                        {/* Đơn đang lưu giá $0 — phân biệt "tính lại được" và
+                            "phôi chưa có trong bảng giá" để biết phải làm gì */}
+                        {(() => {
+                          const z = zeroState(o);
+                          if (z === "ok") return null;
+                          if (z === "no_variant")
+                            return (
+                              <Tooltip title="Đơn đang là $0 và KHÔNG tra được phôi nào trong Bảng giá phôi. Bấm 'Tính lại giá' sẽ không ăn thua — cần thêm dòng phôi vào bảng giá, hoặc sửa tên phôi/màu/size của đơn cho khớp.">
+                                <div className="text-[11px] font-bold text-rose-600 cursor-help">
+                                  ⚠ $0 · chưa có phôi
+                                </div>
+                              </Tooltip>
+                            );
+                          const next = recalcPricing(o);
+                          if (!next) return null;
+                          return (
+                            <Tooltip
+                              title={`Giá lưu trong đơn đang là $0 nhưng bảng giá phôi tính ra ${money(
+                                next.total
+                              )}. Chọn đơn rồi bấm "Tính lại giá" ở thanh dưới để ghi lại.`}
+                            >
+                              <div className="text-[11px] font-bold text-amber-600 cursor-help">
+                                ⚠ cần tính lại (~{money(next.total)})
+                              </div>
+                            </Tooltip>
+                          );
+                        })()}
+                        {/* Đã gán nhà in nhưng phôi chưa có giá của nhà in đó */}
+                        {missingHousePrice(o) && (
+                          <Tooltip
+                            title={`Phôi của đơn này chưa điền giá nhà in "${o.printHouse}" trong Bảng giá phôi -> không tính được lãi/lỗ. Vào tab Phôi điền giá cho đúng nhà in (đừng lấy giá nhà in khác thay thế).`}
+                          >
+                            <div className="text-[11px] font-semibold text-orange-500 cursor-help">
+                              ⚠ thiếu giá {o.printHouse}
+                            </div>
+                          </Tooltip>
+                        )}
                       </td>
                       <td className="p-3 text-right whitespace-nowrap">
                         <Tooltip
@@ -3721,6 +4048,25 @@ export default function Sellers() {
               >
                 <button className="flex items-center gap-1.5 bg-[#374151] hover:bg-[#4B5563] text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer">
                   <FiRotateCcw size={15} /> Trả lại trạng thái trước
+                </button>
+              </Popconfirm>
+            )}
+            {canSeeMoney && recalcableSelected().length > 0 && (
+              <Popconfirm
+                title={`Tính lại giá ${recalcableSelected().length} đơn?`}
+                description="Ghi lại đơn giá từng sản phẩm + Tổng theo BẢNG GIÁ PHÔI hiện tại. Dùng để chữa các đơn đang hiện $0.00. Đơn Hoàn tiền / Đã hủy / Copy / Reship được bỏ qua."
+                okText="Tính lại"
+                cancelText="Đóng"
+                onConfirm={handleBulkRecalcPrice}
+              >
+                <button
+                  disabled={recalcing}
+                  className="flex items-center gap-1.5 bg-[#7C3AED] hover:bg-[#6D28D9] disabled:opacity-60 text-white text-sm font-medium rounded-lg px-3 py-2 border-0 cursor-pointer"
+                >
+                  <FiRefreshCw size={15} />{" "}
+                  {recalcing
+                    ? "Đang tính lại giá..."
+                    : `Tính lại giá (${recalcableSelected().length})`}
                 </button>
               </Popconfirm>
             )}
